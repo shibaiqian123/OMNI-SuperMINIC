@@ -19,7 +19,8 @@ from supermimic.envs.mdp.rewards import TrackingRewardCfg, joint_torque_constant
 from supermimic.envs.tracking_env_cfg import ANCHOR_BODY, ROOT_BODY, TRACKED_BODIES
 from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
-from supermimic.policy.nets import Critic, Policy
+from supermimic.policy.nets import Critic
+from supermimic.policy.checkpoint import build_policy, load_policy_state, policy_metadata
 from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
 from supermimic.training.schedule import cosine_lr
 from supermimic.world_model.heads import AnalyticHeads
@@ -30,7 +31,13 @@ from supermimic.world_model.world_model import WorldModel
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
-        cfg.policy.goal_dim = cfg.env.future_frames * 68 + (9 if cfg.env.anchor_obs else 0)
+        cfg.resolve_policy_config()
+        # Fail on incompatible policy BEFORE creating simulator/logs/optimizers.
+        # CPU preflight retains the validated policy and does not touch WM state.
+        initial_policy = (
+            load_policy_state(torch.load(cfg.resume, map_location="cpu", weights_only=False), cfg)
+            if cfg.resume is not None else None
+        )
         cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
         cfg.policy_trainer.imu_sat_prob = cfg.env.imu_sat_prob
         cfg.policy_trainer.imu_gyro_limit = cfg.env.imu_gyro_limit
@@ -168,7 +175,7 @@ class Trainer:
             reward_cfg.w_locked_action = cfg.env.locked_action_weight
         heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, soft_full, q0_full, reward_cfg, pd=pd)
         self.wm = WorldModel(cfg.world_model, heads, self.device)
-        self.policy = Policy(cfg.policy).to(self.device)
+        self.policy = (initial_policy if initial_policy is not None else build_policy(cfg)).to(self.device)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
         for m in (self.wm, self.policy, self.critic):
             broadcast_params(m)
@@ -202,6 +209,7 @@ class Trainer:
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
                 "policy": self.policy.state_dict(),
+                "policy_schema": policy_metadata(self.cfg),
                 "critic": self.critic.state_dict(),
                 "wm_opt": self.wm_trainer.opt.state_dict(),
                 "policy_opt": self.policy_trainer.opt.state_dict(),
@@ -214,8 +222,8 @@ class Trainer:
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
+        load_policy_state(ck, self.cfg, policy=self.policy)
         self.wm.load_state_dict(ck["wm"])
-        self.policy.load_state_dict(ck["policy"])
         self.critic.load_state_dict(ck["critic"])
         self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
         self.policy_trainer.opt.load_state_dict(ck["policy_opt"])

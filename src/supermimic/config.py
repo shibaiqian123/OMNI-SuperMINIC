@@ -145,6 +145,8 @@ class EnvCfg:
     real_reset_joint_vel_noise: float = 0.3
 
     def __post_init__(self) -> None:
+        if type(self.future_frames) is not int or self.future_frames < 1:
+            raise ValueError("env.future_frames must be a positive integer")
         if self.fail_reset_frac > 0 and self.fail_reset_list is None:
             raise ValueError(f"--env.fail-reset-frac {self.fail_reset_frac} > 0 needs --env.fail-reset-list")
         if self.real_reset_prob > 0 and self.real_reset_file is None:
@@ -184,6 +186,8 @@ class ScheduleCfg:
 
 @dataclass
 class TrainConfig:
+    policy_schema_version: int = 1
+    policy_variant: str = "continuous"
     run_name: str = "debug"
     log_root: Path = Path("logs")
     seed: int = 0
@@ -200,3 +204,16 @@ class TrainConfig:
     # On resume, reset the sampler statistics (G_b <- G_max, memory <- uniform, visit counts n_b <- 0) instead of loading them; required when
     # the library changed (different bins). Model and optimizer states are still loaded.
     resume_reset_sampler: bool = False
+
+    def resolve_policy_config(self) -> None:
+        """Resolve the old automatic goal default, then validate before allocation.
+
+        Keep --env.anchor-obs / --env.future-frames commands working. An explicit
+        non-default goal dimension must agree; resume also checks saved metadata.
+        """
+        from supermimic.policy.checkpoint import policy_metadata
+
+        goal = 68 * self.env.future_frames + (9 if self.env.anchor_obs else 0)
+        if self.policy.goal_dim == 680:
+            self.policy.goal_dim = goal
+        policy_metadata(self)

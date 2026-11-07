@@ -20,7 +20,8 @@ from pathlib import Path
 import torch
 
 from supermimic.envs import SuperMimicEnvCfgArgs, make_env
-from supermimic.policy.nets import Policy, PolicyCfg
+from supermimic.policy.nets import Policy
+from supermimic.policy.checkpoint import load_policy_state
 
 
 @dataclass
@@ -38,10 +39,7 @@ class ClipResult:
 
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
     ck = torch.load(path, map_location=device, weights_only=False)
-    pc = ck["config"]["policy"]
-    pcfg = PolicyCfg(**{k: (tuple(v) if isinstance(v, list) else v) for k, v in pc.items()})
-    policy = Policy(pcfg).to(device)
-    policy.load_state_dict(ck["policy"])
+    policy = load_policy_state(ck).to(device)
     policy.eval()
     return policy, ck["config"]
 
