@@ -41,6 +41,8 @@ def test_actor_exception_restores_frozen_parameter_flags(monkeypatch):
     trainer.wm = WorldModel()
     trainer.critic = torch.nn.Linear(2, 1)
     trainer.policy = torch.nn.Linear(2, 2)
+    trainer.lib = None
+    trainer.step_fn = None
     list(trainer.wm.parameters())[0].requires_grad_(False)
     before_wm = [p.requires_grad for p in trainer.wm.parameters()]
     before_critic = [p.requires_grad for p in trainer.critic.parameters()]
