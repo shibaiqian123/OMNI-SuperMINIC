@@ -68,29 +68,35 @@ class PolicyTrainer:
         xi_norm = self.wm.spec.normalize_xi(start.xi)
 
         # ---- actor: BPTT through the frozen world model ------------------------------------
-        self.wm.requires_grad_(False)
-        self.critic.requires_grad_(False)
-        imu = None
-        if cfg.imu_sat_prob > 0.0:
-            from supermimic.envs.imu_model import ImuImagCfg
+        wm_grad = [p.requires_grad for p in self.wm.parameters()]
+        critic_grad = [p.requires_grad for p in self.critic.parameters()]
+        try:
+            self.wm.requires_grad_(False)
+            self.critic.requires_grad_(False)
+            imu = None
+            if cfg.imu_sat_prob > 0.0:
+                from supermimic.envs.imu_model import ImuImagCfg
 
-            imu = ImuImagCfg(cfg.imu_sat_prob, cfg.imu_gyro_limit, cfg.imu_accel_k_max, cfg.imu_init_tilt_deg)
-        ro = imagine(self.wm, self.policy, self.lib, start, cfg.horizon, cfg.future_frames, obs_noise=cfg.obs_noise, step_fn=self.step_fn, anchor_obs=cfg.anchor_obs, imu=imu)
-        feat, goals, e_root = self._critic_inputs(ro)
-        if cfg.use_critic:
-            v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
-        else:
-            v_H = None
-        J = policy_objective(ro, v_H, cfg.gamma)
-        loss = -J / cfg.horizon
-        self.opt.zero_grad(set_to_none=True)
-        loss.backward()
-        allreduce_grads(self.policy)
-        gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
-        torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
-        self.opt.step()
-        self.wm.requires_grad_(True)
-        self.critic.requires_grad_(True)
+                imu = ImuImagCfg(cfg.imu_sat_prob, cfg.imu_gyro_limit, cfg.imu_accel_k_max, cfg.imu_init_tilt_deg)
+            ro = imagine(self.wm, self.policy, self.lib, start, cfg.horizon, cfg.future_frames, obs_noise=cfg.obs_noise, step_fn=self.step_fn, anchor_obs=cfg.anchor_obs, imu=imu)
+            feat, goals, e_root = self._critic_inputs(ro)
+            if cfg.use_critic:
+                v_H = self.critic(feat[-1], goals[-1], xi_norm, e_root[-1])
+            else:
+                v_H = None
+            J = policy_objective(ro, v_H, cfg.gamma)
+            loss = -J / cfg.horizon
+            self.opt.zero_grad(set_to_none=True)
+            loss.backward()
+            allreduce_grads(self.policy)
+            gn = torch.nn.utils.clip_grad_norm_(self.policy.parameters(), cfg.grad_clip_norm)
+            torch.nn.utils.clip_grad_value_(self.policy.parameters(), cfg.grad_clip_value)
+            self.opt.step()
+        finally:
+            for p, requires_grad in zip(self.wm.parameters(), wm_grad):
+                p.requires_grad_(requires_grad)
+            for p, requires_grad in zip(self.critic.parameters(), critic_grad):
+                p.requires_grad_(requires_grad)
 
         metrics = {
             "imag_objective": float(J.detach()),
@@ -105,6 +111,15 @@ class PolicyTrainer:
             metrics["locked_action_abs_mean"] = float(ro.actions[..., list(self.wm.spec.locked_joints)].abs().mean().detach())
         for k, v in ro.reward_terms.items():
             metrics[f"imag_r/{k}"] = v
+        if self.policy.fsq is not None:
+            with torch.no_grad():
+                flat_goals = ro.goals[:-1].reshape(-1, ro.goals.shape[-1])
+                prequant = self.policy.encode(flat_goals)
+                info = self.policy.quantize(prequant, return_info=True)
+                deterministic, _ = self.policy.fsq.quantize_deterministic(prequant)
+                metrics["fsq/level_coverage"] = float(info.indices.unique().numel() / self.policy.fsq.cfg.levels)
+                metrics["fsq/saturation_frac"] = float((prequant.abs() >= 1.0).float().mean())
+                metrics["fsq/quant_error_abs"] = float((deterministic - prequant.reshape_as(deterministic)).abs().mean())
 
         # ---- critic: fit to GAE targets of this rollout (targets fixed) ---------------------
         if cfg.use_critic:
