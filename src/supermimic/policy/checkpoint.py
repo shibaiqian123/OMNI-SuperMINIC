@@ -131,7 +131,11 @@ def checkpoint_metadata(payload) -> dict:
         for key in ("future_frames", "anchor_obs", "lock_waist", "lock_waist_refs"):
             if key not in cfg["env"]:
                 raise ValueError(f"checkpoint.config.env.{key}: missing")
-        _compare(_plain(payload["policy_schema"]), meta, "policy_schema")
+        saved_meta = _plain(payload["policy_schema"])
+        if meta["variant"] == "continuous" and isinstance(saved_meta.get("policy"), dict):
+            for key in optional_continuous:
+                saved_meta["policy"].setdefault(key, meta["policy"][key])
+        _compare(saved_meta, meta, "policy_schema")
     elif "policy_schema_version" in cfg or "policy_variant" in cfg:
         raise ValueError("checkpoint.policy_schema: missing for versioned config")
     return meta

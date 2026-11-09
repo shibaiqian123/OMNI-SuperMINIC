@@ -58,6 +58,17 @@ def test_legacy_missing_fields_use_baseline_defaults():
         torch.testing.assert_close(new.state_dict()[key], value, rtol=0, atol=0)
 
 
+def test_c02_versioned_continuous_schema_loads_without_later_fsq_fields():
+    cfg = config()
+    old, ck = checkpoint(cfg)
+    for key in ("fsq_num_tokens", "fsq_token_dim", "fsq_levels"):
+        ck["config"]["policy"].pop(key)
+        ck["policy_schema"]["policy"].pop(key)
+    new = load_policy_state(ck)
+    for key, value in old.state_dict().items():
+        torch.testing.assert_close(new.state_dict()[key], value, rtol=0, atol=0)
+
+
 @pytest.mark.parametrize("mutation,match", [
     (lambda c: c["policy"].update(latent_dim=64), "latent_dim"),
     (lambda c: c["env"].update(anchor_obs=True), "goal_dim"),
