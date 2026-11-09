@@ -6,6 +6,7 @@ on a stub library and stub env; the GPU test runs the real Trainer resume path o
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -345,13 +346,15 @@ def test_count_warmstart_saturated_is_plain_ema():
 def stub_trainer(lib: StubLib, **cfg_kw):
     from supermimic.config import TrainConfig
     from supermimic.imagination.policy_trainer import PolicyTrainer
+    from supermimic.policy.checkpoint import build_policy
     from supermimic.training.loop import Trainer
     from supermimic.world_model.wm_trainer import WorldModelTrainer
 
     tr = object.__new__(Trainer)
     tr.cfg = TrainConfig(device="cpu", **cfg_kw)
+    tr.cfg.resolve_policy_config()
     tr.device, tr.is_main = "cpu", True
-    tr.wm, tr.policy, tr.critic = torch.nn.Linear(3, 3), torch.nn.Linear(3, 2), torch.nn.Linear(3, 1)
+    tr.wm, tr.policy, tr.critic = torch.nn.Linear(3, 3), build_policy(tr.cfg), torch.nn.Linear(3, 1)
     tr.wm_trainer = object.__new__(WorldModelTrainer)
     tr.wm_trainer.opt = torch.optim.Adam(tr.wm.parameters(), lr=2e-4)
     tr.policy_trainer = object.__new__(PolicyTrainer)
@@ -363,6 +366,8 @@ def stub_trainer(lib: StubLib, **cfg_kw):
 
 def save_ckpt(tr, path: Path, lr: float = 8e-5, visits: bool = False) -> dict:
     """A checkpoint as written by Trainer.save; visits=False: e1-e11b format (no bin_visits)."""
+    from supermimic.policy.checkpoint import policy_metadata
+
     for o in (tr.wm_trainer.opt, tr.policy_trainer.opt, tr.policy_trainer.critic_opt):
         for g in o.param_groups:
             g["lr"] = lr
@@ -371,6 +376,7 @@ def save_ckpt(tr, path: Path, lr: float = 8e-5, visits: bool = False) -> dict:
         "wm": tr.wm.state_dict(), "policy": tr.policy.state_dict(), "critic": tr.critic.state_dict(),
         "wm_opt": tr.wm_trainer.opt.state_dict(), "policy_opt": tr.policy_trainer.opt.state_dict(),
         "critic_opt": tr.policy_trainer.critic_opt.state_dict(),
+        "config": asdict(tr.cfg), "policy_schema": policy_metadata(tr.cfg),
         "bin_return": torch.rand(tr.command.library.num_bins) * 10, "bin_memory": torch.rand(tr.command.library.num_bins),
     }
     if visits:
