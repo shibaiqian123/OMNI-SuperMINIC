@@ -216,4 +216,6 @@ class TrainConfig:
         goal = 68 * self.env.future_frames + (9 if self.env.anchor_obs else 0)
         if self.policy.goal_dim == 680:
             self.policy.goal_dim = goal
+        if self.policy_variant in ("continuous64", "fsq64") and self.policy.latent_dim == 32:
+            self.policy.latent_dim = 64
         policy_metadata(self)

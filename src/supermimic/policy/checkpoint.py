@@ -2,7 +2,7 @@
 
 Legacy means a payload without policy_schema AND without a config schema version.
 Missing legacy fields use NJU defaults, never shape-based architecture inference.
-C02 supports continuous policies only; FSQ must register a new variant explicitly.
+FSQ and widened policies carry explicit variants and quantizer metadata.
 """
 from __future__ import annotations
 
@@ -41,8 +41,8 @@ def policy_metadata(cfg) -> dict:
     if type(version) is not int or version != SCHEMA_VERSION:
         raise ValueError(f"config.policy_schema_version: unsupported {version!r}")
     variant = cfg.get("policy_variant", "continuous")
-    if variant != "continuous":
-        raise ValueError(f"config.policy_variant: unsupported {variant!r}; FSQ is not implemented yet")
+    if variant not in ("continuous", "continuous64", "fsq64"):
+        raise ValueError(f"config.policy_variant: unsupported {variant!r}")
     try:
         pc = PolicyCfg(**cfg["policy"])
     except TypeError as exc:
@@ -62,6 +62,15 @@ def policy_metadata(cfg) -> dict:
         raise ValueError(f"config.policy.goal_dim: {pc.goal_dim!r} != {expected_goal} for future_frames={future}, anchor_obs={anchor}")
     if type(pc.latent_dim) is not int or pc.latent_dim < 1:
         raise ValueError("config.policy.latent_dim: must be a positive integer")
+    required_latent = 32 if variant == "continuous" else 64
+    if pc.latent_dim != required_latent:
+        raise ValueError(f"config.policy.latent_dim: {variant} requires {required_latent}, got {pc.latent_dim}")
+    if any(type(v) is not int or v < 1 for v in (pc.fsq_num_tokens, pc.fsq_token_dim, pc.fsq_levels)):
+        raise ValueError("config.policy.fsq_*: expected positive integers")
+    if pc.fsq_levels < 2:
+        raise ValueError("config.policy.fsq_levels: must be at least 2")
+    if variant == "fsq64" and pc.fsq_num_tokens * pc.fsq_token_dim != pc.latent_dim:
+        raise ValueError("config.policy.fsq_num_tokens * fsq_token_dim must equal latent_dim")
     if type(pc.history) is not int or pc.history != 10:
         raise ValueError("config.policy.history: current Decoder requires 10 frames (930D)")
     for name, n in (("obs_term_scale", 5), ("goal_term_scale", 6)):
@@ -73,7 +82,10 @@ def policy_metadata(cfg) -> dict:
             raise ValueError(f"config.policy.{name}: widths must be positive integers")
     return {
         "version": version, "variant": variant, "policy": _plain(pc),
-        "interfaces": ["motion"], "fsq": None,
+        "interfaces": ["motion"],
+        "fsq": ({"num_tokens": pc.fsq_num_tokens, "token_dim": pc.fsq_token_dim,
+                 "levels": pc.fsq_levels, "range": [-1.0, 1.0],
+                 "round": "nearest-half-up"} if variant == "fsq64" else None),
         "observation": {"frame_dim": 93, "history": 10, "layout": "term-major"},
         "goal": {"future_frames": future, "anchor_obs": anchor,
                  "mode": "pose9d" if anchor else "none", "layout": "frame-major+anchor"},
@@ -94,7 +106,7 @@ def _compare(actual, expected, path):
 
 def build_policy(cfg) -> Policy:
     meta = policy_metadata(cfg)
-    return Policy(PolicyCfg(**meta["policy"]))
+    return Policy(PolicyCfg(**meta["policy"]), variant=meta["variant"])
 
 
 def checkpoint_metadata(payload) -> dict:
@@ -107,7 +119,13 @@ def checkpoint_metadata(payload) -> dict:
         for key in ("policy_schema_version", "policy_variant", "env"):
             if key not in cfg:
                 raise ValueError(f"checkpoint.config.{key}: missing")
+        # C02 versioned continuous checkpoints predate the three FSQ config
+        # fields. They have no effect on that architecture, so defaults remain
+        # the only allowed compatibility fill.
+        optional_continuous = {"fsq_num_tokens", "fsq_token_dim", "fsq_levels"}
         for field in fields(PolicyCfg):
+            if meta["variant"] == "continuous" and field.name in optional_continuous:
+                continue
             if field.name not in cfg["policy"]:
                 raise ValueError(f"checkpoint.config.policy.{field.name}: missing")
         for key in ("future_frames", "anchor_obs", "lock_waist", "lock_waist_refs"):
@@ -128,6 +146,8 @@ def load_policy_state(payload, cfg=None, *, policy: Policy | None = None) -> Pol
         policy = build_policy(payload["config"])
     else:
         _compare(_plain(policy.cfg), meta["policy"], "policy.cfg")
+        if policy.variant != meta["variant"]:
+            raise ValueError(f"policy.variant: {policy.variant!r} != {meta['variant']!r}")
     state = payload.get("policy")
     if not isinstance(state, Mapping):
         raise ValueError("checkpoint.policy: missing state dictionary")

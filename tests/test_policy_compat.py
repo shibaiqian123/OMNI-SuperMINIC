@@ -10,9 +10,9 @@ from supermimic.policy.checkpoint import build_policy, load_policy_state, policy
 from supermimic.policy.nets import Policy, PolicyCfg
 
 
-def config(anchor=False, latent=32):
+def config(anchor=False, latent=32, variant="continuous"):
     return {
-        "policy_schema_version": 1, "policy_variant": "continuous",
+        "policy_schema_version": 1, "policy_variant": variant,
         "policy": asdict(PolicyCfg(encoder_hidden=(16,), decoder_hidden=(16,),
                                    goal_dim=689 if anchor else 680, latent_dim=latent)),
         "env": {"anchor_obs": anchor, "future_frames": 10,
@@ -22,7 +22,7 @@ def config(anchor=False, latent=32):
 
 def checkpoint(cfg, legacy=False):
     # Construct with the original public Policy constructor, not the new builder.
-    model = Policy(PolicyCfg(**cfg["policy"]))
+    model = Policy(PolicyCfg(**cfg["policy"]), cfg.get("policy_variant", "continuous"))
     saved = deepcopy(cfg)
     if legacy:
         saved.pop("policy_schema_version")
@@ -62,7 +62,7 @@ def test_legacy_missing_fields_use_baseline_defaults():
     (lambda c: c["policy"].update(latent_dim=64), "latent_dim"),
     (lambda c: c["env"].update(anchor_obs=True), "goal_dim"),
     (lambda c: c["env"].update(lock_waist=True), "lock_waist"),
-    (lambda c: c.update(policy_variant="fsq"), "policy_variant"),
+    (lambda c: c.update(policy_variant="fsq64"), "latent_dim"),
     (lambda c: c.update(policy_schema_version=2), "schema_version"),
     (lambda c: c["policy"].update(history=5), "history"),
 ])
@@ -100,7 +100,7 @@ def test_invalid_checkpoints_rejected_without_mutation(case, match):
     elif case == "fsq_metadata":
         ck["policy_schema"]["fsq"] = {"levels": 32}
     elif case == "latent64_as32":
-        _, other = checkpoint(config(latent=64))
+        _, other = checkpoint(config(latent=64, variant="continuous64"))
         ck["policy"] = other["policy"]
     with pytest.raises(ValueError, match=match):
         load_policy_state(ck, cfg, policy=target)
@@ -134,6 +134,20 @@ def test_optimizer_save_resume_next_step(tmp_path):
     step(new, resumed_opt)
     for key, value in old.state_dict().items():
         torch.testing.assert_close(new.state_dict()[key], value, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("variant", ["continuous64", "fsq64"])
+def test_omni_variant_checkpoint_roundtrip(variant):
+    cfg = config(latent=64, variant=variant)
+    old, ck = checkpoint(cfg)
+    new = load_policy_state(ck, cfg)
+    assert new.variant == variant
+    if variant == "continuous64":
+        assert policy_metadata(cfg)["fsq"] is None
+    else:
+        assert policy_metadata(cfg)["fsq"]["levels"] == 32
+    obs, goal = torch.randn(3, 930), torch.randn(3, 680)
+    torch.testing.assert_close(new(obs, goal), old(obs, goal), rtol=0, atol=0)
 
 
 def test_benchmark_uses_same_loader(tmp_path):
