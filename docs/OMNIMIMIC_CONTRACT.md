@@ -237,3 +237,18 @@ e63fecc96fa5764fc4df3d54e1b31737d602e0194b55c5713bea2aa2e18b9bea  README.md
 ```
 
 两份文档的相对链接在写入前核对；最终提交范围由Git检查，仅允许本档案与契约文档。
+
+## 10. P1实现补充（2026-11-09）
+
+第6节记录的是C01时的拟议schema；以下为当前已落地的G1 P1契约：
+
+- `policy_variant=continuous`：原始32D连续latent，旧参数名和严格checkpoint加载保持不变。
+- `policy_variant=continuous64`：64D连续latent，不经过量化，用作宽度消融。
+- `policy_variant=fsq64`：Encoder输出`[B,64]`，FSQ重排为`[B,2,32]`，Decoder展平后与930D observation拼接并输出29D action。
+- 每个FSQ分量在`[-1,1]`上使用32个包含端点的等距中心。索引公式为`floor((clip(x,-1,1)+1)*(L-1)/2+0.5)`，即最近中心、精确半格向上；索引范围`[0,31]`。训练前向使用同一量化值，反向使用STE；确定性路径不使用STE。
+- checkpoint metadata保存variant、token数量、token维度、levels、范围和round规则。32D/64D、continuous/FSQ或goal schema不匹配时在加载权重前失败，不使用`strict=False`。
+- `Policy.encode()`、`quantize()`和`decode()`是拆分接口；组合调用必须与`forward()`数值一致。当前仅注册`motion`接口，SMPL/Teleop仍属于P2之后工作。
+- Goal仅接受`K*68`或`K*68+9`。`anchor_obs=False`为默认680D；`anchor_obs=True`复用现有torso相对位置3D和相对旋转6D，得到689D。没有新增ori-only 686D模式。
+- PolicyTrainer在Actor BPTT期间保留WM/Critic原始`requires_grad`状态并在异常时恢复；FSQ训练记录全局level coverage、饱和比例和平均绝对量化误差。
+
+32独立验证checkout上的离线结果：目标测试`47 passed`；隐藏CUDA后的全CPU回归为`120 passed, 39 skipped`。跳过项主要需要CUDA、数据或部署产物，不能计作通过。G1 FSQ训练、anchor训练、闭环benchmark、ONNX和Sim2Sim尚未通过；当前GPU资源状态为`BLOCKED_RESOURCE`。

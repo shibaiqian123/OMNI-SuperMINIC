@@ -142,3 +142,14 @@ uv run python scripts/eval_benchmark.py   --ckpt /实际路径/ckpt_XXXXXXX.pt -
 - 待后续运行验证：32环境确认、真实checkpoint、环境/imagination/ORT完整parity、Sim2Sim及真机。不得把本组PASS当作这些事项通过。
 
 结论：**C01文档改动完成，本组文档验收通过。** 本次提交由Git自身记录commit，避免在提交内容中写入尚不存在的自身提交号。浏览器进度不由仓库文档回写。
+
+## 7. 后续实测补充（2026-11-09）
+
+本节更新第2.3、3、4、5节中因早期认证失败留下的历史状态；原文保留作为当次核查记录。
+
+- 32现可经229跳板只读/执行访问。训练仓库为`/share/2025slx/OMNI-SuperMINIC`，P1独立验证checkout为`/share/2025slx/OMNI-SuperMINIC-p1-validation`。
+- 实际解释器：Python 3.12.16、PyTorch 2.14.1+cu126、torch CUDA 12.6、mjlab 1.6.0。
+- LAFAN1转换数据位于`/share/2025slx/OMNI-SuperMINIC/data/npz/lafan1`，本次计数40个NPZ。尚未记录逐文件hash或数据来源版本，因此只作为当前验证集位置，不声称完整数据审计通过。
+- 原始连续32D smoke训练已经运行：256环境、200 iterations、64次更新。checkpoint为`/share/2025slx/omnimimic-runs/nju_baseline_smoke_20261107_201217/ckpt_latest.pt`，大小215468325字节，SHA-256为`303eaf022f58e13d7dfa9ce535bb4cca924cb83a215f98534d97481fa5ca0289`。这是链路smoke，不是收敛基线。
+- 当前P1代码在32执行CPU回归；GPU训练/恢复仍受资源占用阻塞：两张A100在核查时均为100%利用率、约74/80GB显存占用。该状态记为`BLOCKED_RESOURCE`，不计作训练通过。
+- GitHub HTTPS推送因229无交互凭据失败；为不改写32现有训练checkout，使用Git bundle将相同提交同步到独立验证checkout。229提交仍是代码事实来源，但在远端分支可见前不得写成“已推送”。
