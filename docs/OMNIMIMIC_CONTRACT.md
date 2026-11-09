@@ -251,4 +251,4 @@ e63fecc96fa5764fc4df3d54e1b31737d602e0194b55c5713bea2aa2e18b9bea  README.md
 - Goal仅接受`K*68`或`K*68+9`。`anchor_obs=False`为默认680D；`anchor_obs=True`复用现有torso相对位置3D和相对旋转6D，得到689D。没有新增ori-only 686D模式。
 - PolicyTrainer在Actor BPTT期间保留WM/Critic原始`requires_grad`状态并在异常时恢复；FSQ训练记录全局level coverage、饱和比例和平均绝对量化误差。
 
-32独立验证checkout上的离线结果：目标测试`47 passed`；隐藏CUDA后的全CPU回归为`120 passed, 39 skipped`。跳过项主要需要CUDA、数据或部署产物，不能计作通过。G1 FSQ训练、anchor训练、闭环benchmark、ONNX和Sim2Sim尚未通过；当前GPU资源状态为`BLOCKED_RESOURCE`。
+32独立验证checkout上的离线结果：目标测试最终为`60 passed, 2 skipped`（包含sampler恢复回归）；隐藏CUDA后的全CPU回归为`120 passed, 39 skipped`。跳过项主要需要CUDA、数据或部署产物，不能计作通过。原始连续32D checkpoint已通过CPU严格加载和有限29D前向。G1 FSQ训练、anchor训练、闭环benchmark、ONNX和Sim2Sim尚未通过；当前GPU资源状态为`BLOCKED_RESOURCE`。

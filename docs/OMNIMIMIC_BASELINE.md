@@ -152,4 +152,5 @@ uv run python scripts/eval_benchmark.py   --ckpt /实际路径/ckpt_XXXXXXX.pt -
 - LAFAN1转换数据位于`/share/2025slx/OMNI-SuperMINIC/data/npz/lafan1`，本次计数40个NPZ。尚未记录逐文件hash或数据来源版本，因此只作为当前验证集位置，不声称完整数据审计通过。
 - 原始连续32D smoke训练已经运行：256环境、200 iterations、64次更新。checkpoint为`/share/2025slx/omnimimic-runs/nju_baseline_smoke_20261107_201217/ckpt_latest.pt`，大小215468325字节，SHA-256为`303eaf022f58e13d7dfa9ce535bb4cca924cb83a215f98534d97481fa5ca0289`。这是链路smoke，不是收敛基线。
 - 当前P1代码在32执行CPU回归；GPU训练/恢复仍受资源占用阻塞：两张A100在核查时均为100%利用率、约74/80GB显存占用。该状态记为`BLOCKED_RESOURCE`，不计作训练通过。
-- GitHub HTTPS推送因229无交互凭据失败；为不改写32现有训练checkout，使用Git bundle将相同提交同步到独立验证checkout。229提交仍是代码事实来源，但在远端分支可见前不得写成“已推送”。
+- 229本身没有GitHub交互凭据；先用Git bundle同步到32独立验证checkout。随后由本机已有授权的GitHub客户端推送同一Git对象，远端`omni`已核对到`3f0734e`；32验证checkout恢复正式origin并执行`git pull --ff-only`，工作区干净。
+- 最终loader在CPU上加载上述原始连续32D checkpoint成功，输出shape为`[2,29]`且全部有限。C02真实训练恢复仍因GPU资源占用标记为`BLOCKED_RESOURCE`，不能由CPU加载测试替代。
