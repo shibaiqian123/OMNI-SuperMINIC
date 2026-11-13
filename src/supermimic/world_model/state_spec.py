@@ -56,6 +56,7 @@ class StateSpecCfg:
     # Input feature scales for [root_z, rot6d, lin_vel_h, ang_vel_b, joint_pos, joint_vel] (divide by these).
     in_scale: tuple[float, ...] = (1.0, 1.0, 1.0, 2.0, 1.0, 5.0)
     explicit_integration: bool = True
+    dynamics_mode: str = "legacy"  # legacy | semi_implicit
     # xi normalisation: (offset, scale) for friction, encoder bias, com offset.
     xi_offset: tuple[float, ...] = field(default_factory=lambda: (0.75,) + (0.0,) * 29 + (0.0,) * 3)
     xi_scale: tuple[float, ...] = field(default_factory=lambda: (0.45,) + (0.01,) * 29 + (0.05,) * 3)
@@ -65,6 +66,8 @@ class StateSpecCfg:
 class StateSpec:
     def __init__(self, cfg: StateSpecCfg, device, dtype=torch.float32):
         self.cfg = cfg
+        if cfg.dynamics_mode not in ("legacy", "semi_implicit"):
+            raise ValueError(f"unsupported dynamics_mode: {cfg.dynamics_mode!r}")
         self.dt = cfg.dt
         rep = lambda scales, sizes: torch.cat([torch.full((n,), float(s)) for s, n in zip(scales, sizes)])  # noqa: E731
         self.err_scale = rep(cfg.err_scale, (3, 3, 3, 3, NJ, NJ)).to(device=device, dtype=dtype)
@@ -115,8 +118,16 @@ class StateSpec:
         w_new = w + dw_b
         qd_new = qd + dqd
         dt = self.dt if self.cfg.explicit_integration else 0.0
-        p_new = p + dt * v_new + quat_apply(hq, dp_h)
-        q_new = quat_normalize(quat_mul(q, quat_from_rotvec(dt * w_new + dth_b)))
+        if self.cfg.dynamics_mode == "semi_implicit":
+            # BlinkMimic-style residual correction on top of a weighted velocity drift.
+            drift_w = 0.625
+            p_drift = dt * ((1.0 - drift_w) * v + drift_w * v_new)
+            theta_drift = dt * ((1.0 - drift_w) * w + drift_w * w_new)
+        else:
+            p_drift = dt * v_new
+            theta_drift = dt * w_new
+        p_new = p + p_drift + quat_apply(hq, dp_h)
+        q_new = quat_normalize(quat_mul(q, quat_from_rotvec(theta_drift + dth_b)))
         qj_new = qj + dt * qd_new + dq
         if self.joint_mask is not None:  # welded joints: exactly 0
             qj_new = qj_new * self.joint_mask

@@ -202,6 +202,7 @@ class RuntimeCfg:
     pi_opt: str = "adam"
     wm_opt: str = "adam"
     wm_mirror: float = 0.0
+    dynamics_mode: str = "legacy"
     pi_ema: float = 0.0  # 0 disables EMA; otherwise decay in [0, 1)
     pi_lr_mult: float = 1.0
     lr_decay_ret: float = 0.0
@@ -265,5 +266,7 @@ class TrainConfig:
             raise ValueError("runtime.pi_opt/wm_opt must be adam or muon")
         if not 0.0 <= self.runtime.wm_mirror <= 1.0:
             raise ValueError("runtime.wm_mirror must be in [0, 1]")
+        if self.runtime.dynamics_mode not in ("legacy", "semi_implicit"):
+            raise ValueError("runtime.dynamics_mode must be legacy or semi_implicit")
         if self.runtime.lr_decay_ret < 0.0 or self.runtime.lr_decay_len < 1 or self.runtime.lr_decay_by < 0:
             raise ValueError("runtime.lr_decay_* values are invalid")
