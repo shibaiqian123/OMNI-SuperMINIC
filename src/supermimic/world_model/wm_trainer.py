@@ -22,6 +22,7 @@ class WMTrainerCfg:
     grad_clip: float = 1.0
     weight_decay: float = 0.0
     compile: str | None = "default"
+    fused_adam: bool = False
 
 
 def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
@@ -35,7 +36,8 @@ class WorldModelTrainer:
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
-        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay)
+        adam_kw = {"fused": True} if cfg.fused_adam else {}
+        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, **adam_kw)
         wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:

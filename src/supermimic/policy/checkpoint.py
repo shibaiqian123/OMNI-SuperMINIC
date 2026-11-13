@@ -91,6 +91,9 @@ def policy_metadata(cfg) -> dict:
                  "mode": "pose9d" if anchor else "none", "layout": "frame-major+anchor"},
         "robot": {"name": "g1", "action_dim": 29, "lock_waist": locked,
                   "lock_waist_refs": env.get("lock_waist_refs", "feasible") if locked else None},
+        "runtime": {"amp": cfg.get("runtime", {}).get("amp", "none"),
+                    "compile_mode": cfg.get("runtime", {}).get("compile_mode", "default"),
+                    "compile_more": cfg.get("runtime", {}).get("compile_more", False)},
     }
 
 
@@ -135,6 +138,7 @@ def checkpoint_metadata(payload) -> dict:
         if meta["variant"] == "continuous" and isinstance(saved_meta.get("policy"), dict):
             for key in optional_continuous:
                 saved_meta["policy"].setdefault(key, meta["policy"][key])
+        saved_meta.setdefault("runtime", meta["runtime"])
         _compare(saved_meta, meta, "policy_schema")
     elif "policy_schema_version" in cfg or "policy_variant" in cfg:
         raise ValueError("checkpoint.policy_schema: missing for versioned config")

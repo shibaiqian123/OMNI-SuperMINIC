@@ -6,6 +6,11 @@ import torch
 import torch.nn as nn
 
 
+# Set by Trainer before model construction. Only MLP matrix operations use this
+# context; state integration, FK, rewards and quantization remain fp32.
+AMP_DTYPE: torch.dtype | None = None
+
+
 class MLP(nn.Module):
     def __init__(self, in_dim: int, hidden: tuple[int, ...], out_dim: int, act=nn.SiLU, zero_last: bool = False, last_gain: float | None = None):
         super().__init__()
@@ -25,7 +30,9 @@ class MLP(nn.Module):
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        use_amp = AMP_DTYPE is not None and x.device.type == "cuda"
+        with torch.autocast(device_type=x.device.type, dtype=AMP_DTYPE, enabled=use_amp):
+            return self.net(x).to(dtype=x.dtype)
 
 
 class DynamicsMLP(nn.Module):

@@ -26,12 +26,15 @@ from supermimic.training.schedule import cosine_lr
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
 from supermimic.world_model.world_model import WorldModel
+from supermimic.world_model import dynamics as dynamics_module
 
 
 class Trainer:
     def __init__(self, cfg: TrainConfig):
         self.cfg = cfg
         cfg.resolve_policy_config()
+        cfg.validate_runtime()
+        dynamics_module.AMP_DTYPE = torch.bfloat16 if cfg.runtime.amp == "bf16" else None
         # Fail on incompatible policy BEFORE creating simulator/logs/optimizers.
         # CPU preflight retains the validated policy and does not touch WM state.
         initial_policy = (
@@ -39,6 +42,12 @@ class Trainer:
             if cfg.resume is not None else None
         )
         cfg.policy_trainer.anchor_obs = cfg.env.anchor_obs
+        cfg.policy_trainer.compile = cfg.runtime.compile_mode
+        cfg.policy_trainer.compile_more = cfg.runtime.compile_more
+        cfg.policy_trainer.amp = cfg.runtime.amp
+        cfg.policy_trainer.fused_adam = cfg.runtime.fused_adam
+        cfg.wm_trainer.compile = cfg.runtime.compile_mode
+        cfg.wm_trainer.fused_adam = cfg.runtime.fused_adam
         cfg.policy_trainer.imu_sat_prob = cfg.env.imu_sat_prob
         cfg.policy_trainer.imu_gyro_limit = cfg.env.imu_gyro_limit
         cfg.policy_trainer.imu_accel_k_max = cfg.env.imu_accel_k_max
@@ -305,7 +314,8 @@ class Trainer:
                 finished_lens.extend(lens.tolist())
                 self.ep_reward_sum[ids] = 0.0
                 self.ep_len[ids] = 0.0
-            torch.cuda.synchronize()
+            if not cfg.runtime.no_sync:
+                torch.cuda.synchronize()
             timers["sim"] += time.perf_counter() - t0
             self.iteration += 1
 
@@ -317,12 +327,14 @@ class Trainer:
                     lr = self.apply_lr(self.iteration)
                     t0 = time.perf_counter()
                     m_wm = self.wm_trainer.update(self.buffer)
-                    torch.cuda.synchronize()
+                    if not cfg.runtime.no_sync:
+                        torch.cuda.synchronize()
                     timers["wm"] += time.perf_counter() - t0
                     t0 = time.perf_counter()
                     for _ in range(sch.policy_updates_per_wm_update):
                         m_pi = self.policy_trainer.update(self.buffer)
-                    torch.cuda.synchronize()
+                    if not cfg.runtime.no_sync:
+                        torch.cuda.synchronize()
                     timers["policy"] += time.perf_counter() - t0
                     self.num_updates += 1
                     for k, v in m_wm.items():

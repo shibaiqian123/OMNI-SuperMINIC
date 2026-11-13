@@ -185,6 +185,23 @@ class ScheduleCfg:
 
 
 @dataclass
+class RuntimeCfg:
+    """Training-runtime switches; defaults preserve eager fp32 behavior."""
+
+    amp: str = "none"  # none | bf16; MLP matrix operations only
+    compile_mode: str | None = "default"
+    compile_more: bool = False
+    fused_adam: bool = False
+    fused_rot: bool = False
+    no_sync: bool = False
+    cuda_graph: bool = False
+    graph_early: bool = False
+    collect_graph: bool = False
+    reset_masked: bool = False
+    ckpt_light: bool = False
+
+
+@dataclass
 class TrainConfig:
     policy_schema_version: int = 1
     policy_variant: str = "continuous"
@@ -200,6 +217,7 @@ class TrainConfig:
     critic: CriticCfg = field(default_factory=CriticCfg)
     policy_trainer: PolicyTrainerCfg = field(default_factory=PolicyTrainerCfg)
     schedule: ScheduleCfg = field(default_factory=ScheduleCfg)
+    runtime: RuntimeCfg = field(default_factory=RuntimeCfg)
     resume: Path | None = None
     # On resume, reset the sampler statistics (G_b <- G_max, memory <- uniform, visit counts n_b <- 0) instead of loading them; required when
     # the library changed (different bins). Model and optimizer states are still loaded.
@@ -219,3 +237,15 @@ class TrainConfig:
         if self.policy_variant in ("continuous64", "fsq64") and self.policy.latent_dim == 32:
             self.policy.latent_dim = 64
         policy_metadata(self)
+
+    def validate_runtime(self) -> None:
+        if self.runtime.amp not in ("none", "bf16"):
+            raise ValueError(f"runtime.amp: unsupported {self.runtime.amp!r}")
+        if self.runtime.cuda_graph and not self.runtime.fused_adam:
+            raise ValueError("runtime.cuda_graph requires runtime.fused_adam")
+        if self.runtime.graph_early and not self.runtime.cuda_graph:
+            raise ValueError("runtime.graph_early requires runtime.cuda_graph")
+        if self.runtime.collect_graph and not self.runtime.graph_early:
+            raise ValueError("runtime.collect_graph requires runtime.graph_early")
+        if self.runtime.reset_masked and not self.runtime.collect_graph:
+            raise ValueError("runtime.reset_masked requires runtime.collect_graph")
