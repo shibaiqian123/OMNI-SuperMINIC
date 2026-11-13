@@ -40,6 +40,8 @@ class ClipResult:
 def load_policy_from_checkpoint(path: str | Path, device: str) -> tuple[Policy, dict]:
     ck = torch.load(path, map_location=device, weights_only=False)
     policy = load_policy_state(ck).to(device)
+    if ck.get("policy_ema") is not None:
+        policy.load_state_dict(ck["policy_ema"], strict=True)
     policy.eval()
     return policy, ck["config"]
 

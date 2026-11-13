@@ -199,6 +199,11 @@ class RuntimeCfg:
     collect_graph: bool = False
     reset_masked: bool = False
     ckpt_light: bool = False
+    pi_ema: float = 0.0  # 0 disables EMA; otherwise decay in [0, 1)
+    pi_lr_mult: float = 1.0
+    lr_decay_ret: float = 0.0
+    lr_decay_len: int = 300
+    lr_decay_by: int = 0
 
 
 @dataclass
@@ -249,3 +254,9 @@ class TrainConfig:
             raise ValueError("runtime.collect_graph requires runtime.graph_early")
         if self.runtime.reset_masked and not self.runtime.collect_graph:
             raise ValueError("runtime.reset_masked requires runtime.collect_graph")
+        if not 0.0 <= self.runtime.pi_ema < 1.0:
+            raise ValueError("runtime.pi_ema must be in [0, 1)")
+        if self.runtime.pi_lr_mult <= 0.0:
+            raise ValueError("runtime.pi_lr_mult must be positive")
+        if self.runtime.lr_decay_ret < 0.0 or self.runtime.lr_decay_len < 1 or self.runtime.lr_decay_by < 0:
+            raise ValueError("runtime.lr_decay_* values are invalid")

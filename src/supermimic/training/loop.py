@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+import copy
 from dataclasses import asdict
 from pathlib import Path
 
@@ -185,6 +186,11 @@ class Trainer:
         heads = AnalyticHeads(fk, TRACKED_BODIES, ANCHOR_BODY, ROOT_BODY, soft_full, q0_full, reward_cfg, pd=pd)
         self.wm = WorldModel(cfg.world_model, heads, self.device)
         self.policy = (initial_policy if initial_policy is not None else build_policy(cfg)).to(self.device)
+        self.policy_ema = None
+        if cfg.runtime.pi_ema > 0.0:
+            self.policy_ema = copy.deepcopy(self.policy).eval()
+            for p in self.policy_ema.parameters():
+                p.requires_grad_(False)
         self.critic = Critic(cfg.critic, pcfg=cfg.policy).to(self.device)
         for m in (self.wm, self.policy, self.critic):
             broadcast_params(m)
@@ -201,6 +207,7 @@ class Trainer:
         self.max_step_reward = heads.reward_cfg.max_step_reward
         self.iteration = 0
         self.num_updates = 0
+        self._pi_decay_start: int | None = None
         self._utd_acc = 0.0
         if cfg.resume is not None:
             self.load(cfg.resume)
@@ -218,6 +225,9 @@ class Trainer:
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
                 "policy": self.policy.state_dict(),
+                "policy_ema": None if self.policy_ema is None else self.policy_ema.state_dict(),
+                "training_runtime": asdict(self.cfg.runtime),
+                "pi_decay_start": self._pi_decay_start,
                 "policy_schema": policy_metadata(self.cfg),
                 "critic": self.critic.state_dict(),
                 "wm_opt": self.wm_trainer.opt.state_dict(),
@@ -232,6 +242,9 @@ class Trainer:
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
         load_policy_state(ck, self.cfg, policy=self.policy)
+        if self.policy_ema is not None and ck.get("policy_ema") is not None:
+            self.policy_ema.load_state_dict(ck["policy_ema"], strict=True)
+        self._pi_decay_start = ck.get("pi_decay_start")
         self.wm.load_state_dict(ck["wm"])
         self.critic.load_state_dict(ck["critic"])
         self.wm_trainer.opt.load_state_dict(ck["wm_opt"])
@@ -257,7 +270,25 @@ class Trainer:
             lr = sch.lr_constant
         else:
             lr = cosine_lr(iteration, sch.total_iterations, cfg.wm_trainer.lr, sch.lr_final_ratio, sch.lr_decay_fraction)
-        return lr, lr * cfg.policy_trainer.lr / cfg.wm_trainer.lr
+        pi_mult = cfg.runtime.pi_lr_mult
+        decay_start = self._pi_decay_start
+        if decay_start is None and cfg.runtime.lr_decay_by > 0 and iteration >= cfg.runtime.lr_decay_by:
+            decay_start = cfg.runtime.lr_decay_by
+            self._pi_decay_start = decay_start
+        if decay_start is not None:
+            progress = min(1.0, max(0.0, (iteration - decay_start) / cfg.runtime.lr_decay_len))
+            pi_mult = 1.0 + (pi_mult - 1.0) * (1.0 - progress)
+        return lr, lr * cfg.policy_trainer.lr / cfg.wm_trainer.lr * pi_mult
+
+    @torch.no_grad()
+    def update_policy_ema(self) -> None:
+        if self.policy_ema is None:
+            return
+        decay = self.cfg.runtime.pi_ema
+        for avg, live in zip(self.policy_ema.parameters(), self.policy.parameters()):
+            avg.mul_(decay).add_(live, alpha=1.0 - decay)
+        for avg, live in zip(self.policy_ema.buffers(), self.policy.buffers()):
+            avg.copy_(live)
 
     def apply_lr(self, iteration: int) -> float:
         lr_wm, lr_pi = self.lr_at(iteration)
@@ -333,6 +364,7 @@ class Trainer:
                     t0 = time.perf_counter()
                     for _ in range(sch.policy_updates_per_wm_update):
                         m_pi = self.policy_trainer.update(self.buffer)
+                        self.update_policy_ema()
                     if not cfg.runtime.no_sync:
                         torch.cuda.synchronize()
                     timers["policy"] += time.perf_counter() - t0
@@ -367,6 +399,8 @@ class Trainer:
                     tr = float("nan")
                 elif finished_returns:
                     tr = sum(finished_returns) / len(finished_returns)
+                    if cfg.runtime.lr_decay_ret > 0 and tr >= cfg.runtime.lr_decay_ret and self._pi_decay_start is None:
+                        self._pi_decay_start = it
                     self.writer.add_scalar("train/episode_norm_return", tr, it)
                     self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
                 else:
