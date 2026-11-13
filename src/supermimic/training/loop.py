@@ -22,7 +22,7 @@ from supermimic.imagination.policy_trainer import PolicyTrainer
 from supermimic.kinematics.g1_fk import G1Kinematics
 from supermimic.policy.nets import Critic
 from supermimic.policy.checkpoint import build_policy, load_policy_state, policy_metadata
-from supermimic.training.distributed import allreduce_mean, broadcast_params, finalize, init_distributed, world_size
+from supermimic.training.distributed import allreduce_mean, allreduce_sum_tensor, broadcast_params, finalize, init_distributed, world_size
 from supermimic.training.schedule import cosine_lr
 from supermimic.world_model.heads import AnalyticHeads
 from supermimic.world_model.wm_trainer import WorldModelTrainer
@@ -327,10 +327,11 @@ class Trainer:
             print(f"[INFO] lr schedule {mode}; effective lr at iteration {self.iteration}: {lrs}", flush=True)
         t_start = time.time()
         timers = {"sim": 0.0, "wm": 0.0, "policy": 0.0}
-        agg: dict[str, float] = {}
+        agg: dict[str, torch.Tensor | float] = {}
         agg_n = 0
-        finished_returns: list[float] = []
-        finished_lens: list[float] = []
+        finished_return_sum = torch.zeros((), device=self.device)
+        finished_len_sum = torch.zeros((), device=self.device)
+        finished_count = torch.zeros((), device=self.device)
         last_log = time.time()
 
         while self.iteration < sch.total_iterations:
@@ -341,14 +342,12 @@ class Trainer:
             self.ep_reward_sum += rew
             self.ep_len += 1
             done = term | tout
-            if done.any():
-                ids = done.nonzero().squeeze(-1)
-                lens = self.ep_len[ids]
-                norm_ret = self.ep_reward_sum[ids] / (self.max_step_reward * lens.clamp_min(1))
-                finished_returns.extend(norm_ret.tolist())
-                finished_lens.extend(lens.tolist())
-                self.ep_reward_sum[ids] = 0.0
-                self.ep_len[ids] = 0.0
+            norm_ret = self.ep_reward_sum / (self.max_step_reward * self.ep_len.clamp_min(1))
+            finished_return_sum = finished_return_sum + torch.where(done, norm_ret, 0.0).sum()
+            finished_len_sum = finished_len_sum + torch.where(done, self.ep_len, 0.0).sum()
+            finished_count = finished_count + done.float().sum()
+            self.ep_reward_sum = torch.where(done, 0.0, self.ep_reward_sum)
+            self.ep_len = torch.where(done, 0.0, self.ep_len)
             if not cfg.runtime.no_sync:
                 torch.cuda.synchronize()
             timers["sim"] += time.perf_counter() - t0
@@ -384,31 +383,23 @@ class Trainer:
             if self.iteration % sch.log_interval == 0:
                 it = self.iteration
                 elapsed = time.time() - t_start
-                if self.world > 1:
-                    # Every rank must issue the same collectives: reduce (sum, count) unconditionally.
-                    tot = allreduce_mean(float(sum(finished_returns))) * self.world
-                    cnt = allreduce_mean(float(len(finished_returns))) * self.world
-                    finished_returns = [tot / cnt] if cnt > 0 else []
-                    n_finished = int(round(cnt))
-                else:
-                    n_finished = len(finished_returns)
+                # Logging is the only routine host synchronization point in no_sync mode.
+                torch.cuda.synchronize()
+                finished = allreduce_sum_tensor(torch.stack((finished_return_sum, finished_len_sum, finished_count)))
+                ret_sum_log, len_sum_log, count_log = (float(x) for x in finished)
+                n_finished = int(round(count_log))
+                tr = ret_sum_log / count_log if count_log > 0 else float("nan")
                 if not self.is_main:
                     agg, agg_n = {}, 0
-                    finished_returns, finished_lens = [], []
                     timers = {k: 0.0 for k in timers}
                 elif agg_n > 0:
                     for k, v in agg.items():
-                        self.writer.add_scalar(k, v / (agg_n if k != "lr" else 1), it)
-                if not self.is_main:
-                    tr = float("nan")
-                elif finished_returns:
-                    tr = sum(finished_returns) / len(finished_returns)
+                        self.writer.add_scalar(k, float(v / (agg_n if k != "lr" else 1)), it)
+                if self.is_main and count_log > 0:
                     if cfg.runtime.lr_decay_ret > 0 and tr >= cfg.runtime.lr_decay_ret and self._pi_decay_start is None:
                         self._pi_decay_start = it
                     self.writer.add_scalar("train/episode_norm_return", tr, it)
-                    self.writer.add_scalar("train/episode_len", sum(finished_lens) / max(len(finished_lens), 1), it)
-                else:
-                    tr = float("nan")
+                    self.writer.add_scalar("train/episode_len", len_sum_log / count_log, it)
                 with torch.no_grad():
                     if self.is_main and self.buffer.size > 2048:
                         err = self.wm_trainer.online_error(self.buffer, n=1024, k=8)
@@ -442,7 +433,9 @@ class Trainer:
                     )
                     print(msg, flush=True)
                 agg, agg_n = {}, 0
-                finished_returns, finished_lens = [], []
+                finished_return_sum.zero_()
+                finished_len_sum.zero_()
+                finished_count.zero_()
                 timers = {k: 0.0 for k in timers}
             if self.iteration % sch.checkpoint_interval == 0:
                 self.save("ckpt_latest.pt")

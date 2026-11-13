@@ -81,6 +81,15 @@ def allreduce_mean(x: float) -> float:
     return float(t)
 
 
+@torch.no_grad()
+def allreduce_sum_tensor(value: torch.Tensor) -> torch.Tensor:
+    """Sum a scalar tensor across ranks without copying it through a host float."""
+    out = value.detach().clone()
+    if world_size() > 1:
+        dist.all_reduce(out, op=dist.ReduceOp.SUM)
+    return out
+
+
 def finalize() -> None:
     if dist.is_available() and dist.is_initialized():
         dist.destroy_process_group()

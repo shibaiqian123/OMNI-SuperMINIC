@@ -67,7 +67,7 @@ class WorldModelTrainer:
         refs = [ReferenceFrame(None, None, None, None, r.root_pos_w[j * n : (j + 1) * n], r.root_quat_w[j * n : (j + 1) * n]) for j in range(k)]
         return self.wm.window_loss(w.states, w.a_exec, w.xi, w.done, refs)
 
-    def update(self, buffer: ReplayBuffer) -> dict[str, float]:
+    def update(self, buffer: ReplayBuffer) -> dict[str, torch.Tensor]:
         agg: dict[str, torch.Tensor] = {}
         for _ in range(self.cfg.batches_per_update):
             w = buffer.sample_windows(self.cfg.batch_size, self.cfg.window)
@@ -82,7 +82,7 @@ class WorldModelTrainer:
             for k, v in m.items():
                 agg[k] = agg.get(k, 0.0) + v
         # Single host sync per update (keeps the CPU queuing GPU work across minibatches).
-        return {k: float(v) / self.cfg.batches_per_update for k, v in agg.items()}
+        return {k: v / self.cfg.batches_per_update for k, v in agg.items()}
 
     @torch.no_grad()
     def online_error(self, buffer: ReplayBuffer, n: int = 1024, k: int = 8) -> torch.Tensor:

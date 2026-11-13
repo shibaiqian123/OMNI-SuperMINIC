@@ -70,7 +70,7 @@ class PolicyTrainer:
         feat = self.wm.spec.canonical(ro.states.reshape(H1 * n, -1)).reshape(H1, n, -1)
         return feat, ro.goals, ro.e_root
 
-    def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, float]:
+    def update(self, buffer: ReplayBuffer, xi_norm_fn=None) -> dict[str, torch.Tensor]:
         cfg = self.cfg
         start = buffer.sample_starts(cfg.batch_size, cfg.history)
         xi_norm = self.wm.spec.normalize_xi(start.xi)
@@ -107,16 +107,16 @@ class PolicyTrainer:
                 p.requires_grad_(requires_grad)
 
         metrics = {
-            "imag_objective": float(J.detach()),
-            "imag_return_undisc": float((ro.survival[:-1] * ro.rewards).sum(0).mean().detach()),
-            "imag_reward_mean": float(ro.rewards.mean().detach()),
-            "imag_survival_H": float(ro.survival[-1].mean().detach()),
-            "imag_dhat_mean": float(ro.dhat[1:].mean().detach()),
-            "policy_grad_norm": float(gn),
-            "action_abs_mean": float(ro.actions.abs().mean().detach()),
+            "imag_objective": J.detach(),
+            "imag_return_undisc": (ro.survival[:-1] * ro.rewards).sum(0).mean().detach(),
+            "imag_reward_mean": ro.rewards.mean().detach(),
+            "imag_survival_H": ro.survival[-1].mean().detach(),
+            "imag_dhat_mean": ro.dhat[1:].mean().detach(),
+            "policy_grad_norm": gn.detach(),
+            "action_abs_mean": ro.actions.abs().mean().detach(),
         }
         if self.wm.spec.locked_joints:
-            metrics["locked_action_abs_mean"] = float(ro.actions[..., list(self.wm.spec.locked_joints)].abs().mean().detach())
+            metrics["locked_action_abs_mean"] = ro.actions[..., list(self.wm.spec.locked_joints)].abs().mean().detach()
         for k, v in ro.reward_terms.items():
             metrics[f"imag_r/{k}"] = v
         if self.policy.fsq is not None:
@@ -125,9 +125,10 @@ class PolicyTrainer:
                 prequant = self.policy.encode(flat_goals)
                 info = self.policy.quantize(prequant, return_info=True)
                 deterministic, _ = self.policy.fsq.quantize_deterministic(prequant)
-                metrics["fsq/level_coverage"] = float(info.indices.unique().numel() / self.policy.fsq.cfg.levels)
-                metrics["fsq/saturation_frac"] = float((prequant.abs() >= 1.0).float().mean())
-                metrics["fsq/quant_error_abs"] = float((deterministic - prequant.reshape_as(deterministic)).abs().mean())
+                counts = torch.bincount(info.indices.reshape(-1), minlength=self.policy.fsq.cfg.levels)
+                metrics["fsq/level_coverage"] = (counts > 0).float().mean()
+                metrics["fsq/saturation_frac"] = (prequant.abs() >= 1.0).float().mean()
+                metrics["fsq/quant_error_abs"] = (deterministic - prequant.reshape_as(deterministic)).abs().mean()
 
         # ---- critic: fit to GAE targets of this rollout (targets fixed) ---------------------
         if cfg.use_critic:
@@ -157,7 +158,7 @@ class PolicyTrainer:
                     torch.nn.utils.clip_grad_norm_(self.critic.parameters(), cfg.critic_grad_clip)
                     self.critic_opt.step()
                     last = closs.detach()
-            metrics["critic_loss"] = float(last)
-            metrics["critic_value_mean"] = float(values.mean())
-            metrics["critic_target_mean"] = float(targets.mean())
+            metrics["critic_loss"] = last
+            metrics["critic_value_mean"] = values.mean().detach()
+            metrics["critic_target_mean"] = targets.mean().detach()
         return metrics
