@@ -199,6 +199,9 @@ class RuntimeCfg:
     collect_graph: bool = False
     reset_masked: bool = False
     ckpt_light: bool = False
+    pi_opt: str = "adam"
+    wm_opt: str = "adam"
+    wm_mirror: float = 0.0
     pi_ema: float = 0.0  # 0 disables EMA; otherwise decay in [0, 1)
     pi_lr_mult: float = 1.0
     lr_decay_ret: float = 0.0
@@ -258,5 +261,9 @@ class TrainConfig:
             raise ValueError("runtime.pi_ema must be in [0, 1)")
         if self.runtime.pi_lr_mult <= 0.0:
             raise ValueError("runtime.pi_lr_mult must be positive")
+        if self.runtime.pi_opt not in ("adam", "muon") or self.runtime.wm_opt not in ("adam", "muon"):
+            raise ValueError("runtime.pi_opt/wm_opt must be adam or muon")
+        if not 0.0 <= self.runtime.wm_mirror <= 1.0:
+            raise ValueError("runtime.wm_mirror must be in [0, 1]")
         if self.runtime.lr_decay_ret < 0.0 or self.runtime.lr_decay_len < 1 or self.runtime.lr_decay_by < 0:
             raise ValueError("runtime.lr_decay_* values are invalid")

@@ -11,6 +11,7 @@ from supermimic.envs.mdp.motion_library import MotionLibrary
 from supermimic.world_model.heads import ReferenceFrame
 from supermimic.training.distributed import allreduce_grads
 from supermimic.world_model.world_model import WorldModel
+from supermimic.policy.optim import build_optimizer
 
 
 @dataclass
@@ -23,6 +24,8 @@ class WMTrainerCfg:
     weight_decay: float = 0.0
     compile: str | None = "default"
     fused_adam: bool = False
+    opt_kind: str = "adam"
+    mirror_fraction: float = 0.0
 
 
 def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
@@ -36,8 +39,8 @@ class WorldModelTrainer:
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
-        adam_kw = {"fused": True} if cfg.fused_adam else {}
-        self.opt = torch.optim.Adam(wm.parameters(), lr=cfg.lr, weight_decay=cfg.weight_decay, **adam_kw)
+        self.opt = build_optimizer(wm, [wm.dynamics.mlp, wm.term_head.mlp], kind=cfg.opt_kind, lr=cfg.lr, fused=cfg.fused_adam)
+        self.mirror = None
         wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:
@@ -45,6 +48,19 @@ class WorldModelTrainer:
             g["lr"] = lr
 
     def loss_on(self, w: WindowBatch):
+        if self.cfg.mirror_fraction > 0.0:
+            from supermimic.world_model.mirror import G1Mirror
+            if self.mirror is None:
+                self.mirror = G1Mirror(w.states.device)
+            n_mirror = int(w.states.shape[1] * self.cfg.mirror_fraction)
+            if n_mirror:
+                states = w.states.clone()
+                states[:, :n_mirror] = self.mirror.state(states[:, :n_mirror])
+                a_exec = w.a_exec.clone()
+                a_exec[:, :n_mirror] = self.mirror.joints(a_exec[:, :n_mirror])
+                xi = w.xi.clone()
+                xi[:n_mirror] = self.mirror.xi(xi[:n_mirror])
+                w = WindowBatch(states, a_exec, w.a_clean, xi, w.reward, w.done, w.frame)
         k, n = w.frame.shape
         # Only the root pose of the references is needed for the termination features.
         r = self.lib.ref(w.frame.reshape(-1))

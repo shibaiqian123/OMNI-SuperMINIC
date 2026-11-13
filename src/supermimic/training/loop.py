@@ -47,8 +47,11 @@ class Trainer:
         cfg.policy_trainer.compile_more = cfg.runtime.compile_more
         cfg.policy_trainer.amp = cfg.runtime.amp
         cfg.policy_trainer.fused_adam = cfg.runtime.fused_adam
+        cfg.policy_trainer.opt_kind = cfg.runtime.pi_opt
         cfg.wm_trainer.compile = cfg.runtime.compile_mode
         cfg.wm_trainer.fused_adam = cfg.runtime.fused_adam
+        cfg.wm_trainer.opt_kind = cfg.runtime.wm_opt
+        cfg.wm_trainer.mirror_fraction = cfg.runtime.wm_mirror
         cfg.policy_trainer.imu_sat_prob = cfg.env.imu_sat_prob
         cfg.policy_trainer.imu_gyro_limit = cfg.env.imu_gyro_limit
         cfg.policy_trainer.imu_accel_k_max = cfg.env.imu_accel_k_max

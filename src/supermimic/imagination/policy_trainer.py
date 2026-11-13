@@ -13,6 +13,7 @@ from supermimic.imagination.rollout import ImagRollout, imagine
 from supermimic.policy.nets import Critic, Policy
 from supermimic.training.distributed import allreduce_grads
 from supermimic.world_model.world_model import WorldModel
+from supermimic.policy.optim import build_optimizer
 
 
 @dataclass
@@ -37,6 +38,7 @@ class PolicyTrainerCfg:
     compile_more: bool = False
     amp: str = "none"
     fused_adam: bool = False
+    opt_kind: str = "adam"
     anchor_obs: bool = False  # None | "default" | "reduce-overhead" | "max-autotune-no-cudagraphs"
     # Saturating-IMU observation model in imagination (copied from EnvCfg.imu_* by the training loop; 0 = off).
     imu_sat_prob: float = 0.0
@@ -48,9 +50,11 @@ class PolicyTrainerCfg:
 class PolicyTrainer:
     def __init__(self, wm: WorldModel, policy: Policy, critic: Critic, lib: MotionLibrary, cfg: PolicyTrainerCfg):
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
-        adam_kw = {"fused": True} if cfg.fused_adam else {}
-        self.opt = torch.optim.Adam(policy.parameters(), lr=cfg.lr, betas=cfg.betas, **adam_kw)
-        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr, **adam_kw)
+        self.opt_kind = cfg.opt_kind
+        self.opt = build_optimizer(policy, [policy.encoders["motion"].mlp, policy.decoder.mlp], kind=self.opt_kind,
+                                   lr=cfg.lr, betas=cfg.betas, fused=cfg.fused_adam)
+        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr,
+                                           fused=cfg.fused_adam)
         from supermimic.imagination.compiled import ImagStep
 
         self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
