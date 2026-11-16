@@ -32,6 +32,7 @@ class PolicyCfg:
     fsq_token_dim: int = 32
     fsq_levels: int = 32
     ref_skip: bool = False
+    ref_action_scale: tuple[float, ...] = ()
 
 
 @dataclass
@@ -106,6 +107,10 @@ class Policy(nn.Module):
         self.fsq = FSQ(FSQCfg(cfg.fsq_num_tokens, cfg.fsq_token_dim, cfg.fsq_levels)) if variant in {"fsq64", "fsq64_refskip"} else None
         if cfg.ref_skip != (variant == "fsq64_refskip"):
             raise ValueError(f"{variant} requires ref_skip={variant == 'fsq64_refskip'}")
+        if variant == "fsq64_refskip":
+            if len(cfg.ref_action_scale) != ACT_DIM or any(float(v) <= 0 for v in cfg.ref_action_scale):
+                raise ValueError("fsq64_refskip requires 29 positive ref_action_scale values")
+            self.register_buffer("ref_action_scale", torch.tensor(cfg.ref_action_scale, dtype=torch.float32))
         if self.fsq is not None and cfg.latent_dim != self.fsq.cfg.latent_dim:
             raise ValueError("fsq latent dimensions do not match PolicyCfg.latent_dim")
         self.decoder = Decoder(cfg)
@@ -138,7 +143,7 @@ class Policy(nn.Module):
                 raise ValueError("ref_skip requires a G1 goal containing reference joint positions")
             # Goal[0:29] is q_ref - q0 in the existing G1 contract; use it as
             # a residual base while preserving the Decoder's 29D action API.
-            action = action + goal[..., :29]
+            action = action + goal[..., :29] / self.ref_action_scale
         return action
 
 

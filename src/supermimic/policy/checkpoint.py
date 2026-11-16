@@ -65,6 +65,10 @@ def policy_metadata(cfg) -> dict:
     required_latent = 32 if variant == "continuous" else 64
     if pc.latent_dim != required_latent:
         raise ValueError(f"config.policy.latent_dim: {variant} requires {required_latent}, got {pc.latent_dim}")
+    if bool(pc.ref_skip) != (variant == "fsq64_refskip"):
+        raise ValueError(f"config.policy.ref_skip conflicts with {variant}")
+    if variant == "fsq64_refskip" and len(pc.ref_action_scale) != 29:
+        raise ValueError("config.policy.ref_action_scale must contain 29 values")
     if any(type(v) is not int or v < 1 for v in (pc.fsq_num_tokens, pc.fsq_token_dim, pc.fsq_levels)):
         raise ValueError("config.policy.fsq_*: expected positive integers")
     if pc.fsq_levels < 2:

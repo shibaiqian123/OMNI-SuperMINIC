@@ -258,6 +258,18 @@ class TrainConfig:
             self.policy.latent_dim = 64
         if self.policy_variant == "fsq64_refskip":
             self.policy.ref_skip = True
+            if not self.policy.ref_action_scale:
+                import re
+                from mjlab.asset_zoo.robots import G1_ACTION_SCALE
+                from supermimic.data.motion_convert import G1_JOINT_NAMES
+
+                scales = []
+                for joint in G1_JOINT_NAMES:
+                    hits = [value for pattern, value in G1_ACTION_SCALE.items() if re.fullmatch(pattern, joint)]
+                    if len(hits) != 1:
+                        raise ValueError(f"G1 action scale for {joint}: expected one match, got {hits}")
+                    scales.append(float(hits[0]))
+                self.policy.ref_action_scale = tuple(scales)
         policy_metadata(self)
 
     def validate_runtime(self) -> None:

@@ -152,6 +152,7 @@ def test_omni_variant_checkpoint_roundtrip(variant):
     cfg = config(latent=64, variant=variant)
     if variant == "fsq64_refskip":
         cfg["policy"]["ref_skip"] = True
+        cfg["policy"]["ref_action_scale"] = (0.25,) * 29
     old, ck = checkpoint(cfg)
     new = load_policy_state(ck, cfg)
     assert new.variant == variant
