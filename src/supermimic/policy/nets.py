@@ -31,6 +31,7 @@ class PolicyCfg:
     fsq_num_tokens: int = 2
     fsq_token_dim: int = 32
     fsq_levels: int = 32
+    ref_skip: bool = False
 
 
 @dataclass
@@ -96,13 +97,15 @@ class Policy(nn.Module):
         self.cfg = cfg
         variant = variant or ("continuous" if cfg.latent_dim == 32 else "continuous64")
         self.variant = variant
-        if variant not in {"continuous", "continuous64", "fsq64"}:
+        if variant not in {"continuous", "continuous64", "fsq64", "fsq64_refskip"}:
             raise ValueError(f"unknown policy variant: {variant!r}")
         expected = 32 if variant == "continuous" else 64
         if cfg.latent_dim != expected:
             raise ValueError(f"{variant} requires latent_dim={expected}, got {cfg.latent_dim}")
         self.encoders = nn.ModuleDict({"motion": MotionEncoder(cfg)})
-        self.fsq = FSQ(FSQCfg(cfg.fsq_num_tokens, cfg.fsq_token_dim, cfg.fsq_levels)) if variant == "fsq64" else None
+        self.fsq = FSQ(FSQCfg(cfg.fsq_num_tokens, cfg.fsq_token_dim, cfg.fsq_levels)) if variant in {"fsq64", "fsq64_refskip"} else None
+        if cfg.ref_skip != (variant == "fsq64_refskip"):
+            raise ValueError(f"{variant} requires ref_skip={variant == 'fsq64_refskip'}")
         if self.fsq is not None and cfg.latent_dim != self.fsq.cfg.latent_dim:
             raise ValueError("fsq latent dimensions do not match PolicyCfg.latent_dim")
         self.decoder = Decoder(cfg)
@@ -129,7 +132,14 @@ class Policy(nn.Module):
         return self.decoder(token, obs_hist)
 
     def forward(self, obs_hist: torch.Tensor, goal: torch.Tensor, interface: str = "motion") -> torch.Tensor:
-        return self.decode(obs_hist, self.quantize(self.encode(goal, interface)))
+        action = self.decode(obs_hist, self.quantize(self.encode(goal, interface)))
+        if self.cfg.ref_skip:
+            if goal.shape[-1] < 29:
+                raise ValueError("ref_skip requires a G1 goal containing reference joint positions")
+            # Goal[0:29] is q_ref - q0 in the existing G1 contract; use it as
+            # a residual base while preserving the Decoder's 29D action API.
+            action = action + goal[..., :29]
+        return action
 
 
 class Critic(nn.Module):

@@ -60,3 +60,13 @@ def test_legacy_constructor_and_parameter_names_stay_stable():
     assert policy.fsq is None
     assert "encoders.motion.mlp.net.0.weight" in policy.state_dict()
     assert "decoder.mlp.net.0.weight" in policy.state_dict()
+
+
+def test_reference_skip_adds_the_goal_reference_base():
+    c = cfg(64)
+    c.ref_skip = True
+    policy = Policy(c, "fsq64_refskip")
+    obs = torch.randn(2, 930)
+    goal = torch.randn(2, 680)
+    base = policy.decode(obs, policy.quantize(policy.encode(goal)))
+    torch.testing.assert_close(policy(obs, goal), base + goal[:, :29], rtol=0, atol=0)

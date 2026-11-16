@@ -243,8 +243,10 @@ class TrainConfig:
         goal = 68 * self.env.future_frames + (9 if self.env.anchor_obs else 0)
         if self.policy.goal_dim == 680:
             self.policy.goal_dim = goal
-        if self.policy_variant in ("continuous64", "fsq64") and self.policy.latent_dim == 32:
+        if self.policy_variant in ("continuous64", "fsq64", "fsq64_refskip") and self.policy.latent_dim == 32:
             self.policy.latent_dim = 64
+        if self.policy_variant == "fsq64_refskip":
+            self.policy.ref_skip = True
         policy_metadata(self)
 
     def validate_runtime(self) -> None:

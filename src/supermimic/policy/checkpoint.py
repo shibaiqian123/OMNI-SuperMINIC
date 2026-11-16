@@ -41,7 +41,7 @@ def policy_metadata(cfg) -> dict:
     if type(version) is not int or version != SCHEMA_VERSION:
         raise ValueError(f"config.policy_schema_version: unsupported {version!r}")
     variant = cfg.get("policy_variant", "continuous")
-    if variant not in ("continuous", "continuous64", "fsq64"):
+    if variant not in ("continuous", "continuous64", "fsq64", "fsq64_refskip"):
         raise ValueError(f"config.policy_variant: unsupported {variant!r}")
     try:
         pc = PolicyCfg(**cfg["policy"])
@@ -69,7 +69,7 @@ def policy_metadata(cfg) -> dict:
         raise ValueError("config.policy.fsq_*: expected positive integers")
     if pc.fsq_levels < 2:
         raise ValueError("config.policy.fsq_levels: must be at least 2")
-    if variant == "fsq64" and pc.fsq_num_tokens * pc.fsq_token_dim != pc.latent_dim:
+    if variant in ("fsq64", "fsq64_refskip") and pc.fsq_num_tokens * pc.fsq_token_dim != pc.latent_dim:
         raise ValueError("config.policy.fsq_num_tokens * fsq_token_dim must equal latent_dim")
     if type(pc.history) is not int or pc.history != 10:
         raise ValueError("config.policy.history: current Decoder requires 10 frames (930D)")
@@ -85,7 +85,7 @@ def policy_metadata(cfg) -> dict:
         "interfaces": ["motion"],
         "fsq": ({"num_tokens": pc.fsq_num_tokens, "token_dim": pc.fsq_token_dim,
                  "levels": pc.fsq_levels, "range": [-1.0, 1.0],
-                 "round": "nearest-half-up"} if variant == "fsq64" else None),
+                 "round": "nearest-half-up"} if variant in ("fsq64", "fsq64_refskip") else None),
         "observation": {"frame_dim": 93, "history": 10, "layout": "term-major"},
         "goal": {"future_frames": future, "anchor_obs": anchor,
                  "mode": "pose9d" if anchor else "none", "layout": "frame-major+anchor"},

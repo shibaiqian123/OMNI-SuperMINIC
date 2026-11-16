@@ -147,9 +147,11 @@ def test_optimizer_save_resume_next_step(tmp_path):
         torch.testing.assert_close(new.state_dict()[key], value, rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("variant", ["continuous64", "fsq64"])
+@pytest.mark.parametrize("variant", ["continuous64", "fsq64", "fsq64_refskip"])
 def test_omni_variant_checkpoint_roundtrip(variant):
     cfg = config(latent=64, variant=variant)
+    if variant == "fsq64_refskip":
+        cfg["policy"]["ref_skip"] = True
     old, ck = checkpoint(cfg)
     new = load_policy_state(ck, cfg)
     assert new.variant == variant
