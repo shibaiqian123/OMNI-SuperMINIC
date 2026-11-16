@@ -199,6 +199,7 @@ class RuntimeCfg:
     collect_graph: bool = False
     reset_masked: bool = False
     ckpt_light: bool = False
+    ckpt_async: bool = False
     pi_opt: str = "adam"
     wm_opt: str = "adam"
     wm_mirror: float = 0.0
@@ -211,6 +212,12 @@ class RuntimeCfg:
     w_contact: float = 0.0
     contact_height: float = 0.045
     contact_speed: float = 0.5
+    eprobe_share: float = 0.0
+    eprobe_start: int = 1000
+    eprobe_every: int = 125
+    eprobe_window_s: float = 10.0
+    eprobe_decay: float = 0.7
+    eprobe_num_envs: int = 1
 
 
 @dataclass
@@ -273,5 +280,13 @@ class TrainConfig:
             raise ValueError("runtime.wm_mirror must be in [0, 1]")
         if self.runtime.dynamics_mode not in ("legacy", "semi_implicit"):
             raise ValueError("runtime.dynamics_mode must be legacy or semi_implicit")
+        if not 0.0 <= self.runtime.eprobe_share <= 1.0:
+            raise ValueError("runtime.eprobe_share must be in [0, 1]")
+        if self.runtime.eprobe_every < 1 or self.runtime.eprobe_start < 0 or self.runtime.eprobe_window_s <= 0:
+            raise ValueError("runtime eprobe interval/window is invalid")
+        if not 0.0 <= self.runtime.eprobe_decay <= 1.0 or self.runtime.eprobe_num_envs < 1:
+            raise ValueError("runtime eprobe decay/env count is invalid")
+        if self.runtime.eprobe_share > 0 and self.runtime.pi_ema <= 0:
+            raise ValueError("runtime.eprobe_share requires runtime.pi_ema > 0")
         if self.runtime.lr_decay_ret < 0.0 or self.runtime.lr_decay_len < 1 or self.runtime.lr_decay_by < 0:
             raise ValueError("runtime.lr_decay_* values are invalid")

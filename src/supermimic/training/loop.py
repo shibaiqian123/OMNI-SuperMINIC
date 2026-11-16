@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import time
 import copy
+import os
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
 
@@ -77,6 +79,8 @@ class Trainer:
         self.device = cfg.device
         self.log_dir = Path(cfg.log_root) / cfg.run_name
         self.log_dir.mkdir(parents=True, exist_ok=True)
+        self._checkpoint_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="omni-checkpoint") if cfg.runtime.ckpt_async else None
+        self._checkpoint_future: Future | None = None
         if self.is_main:
             (self.log_dir / "config.json").write_text(json.dumps(asdict(cfg), indent=2, default=str))
         self.writer = SummaryWriter(str(self.log_dir / "tb")) if self.is_main else None
@@ -88,6 +92,11 @@ class Trainer:
             files = discover_npz(cfg.data.npz_dir, limit=cfg.data.limit, names=cfg.data.clips, manifest=cfg.data.manifest)
         if not files:
             raise FileNotFoundError(f"no clips under {cfg.data.npz_dir}")
+        self.motion_files = files
+        if cfg.runtime.eprobe_share > 0 and cfg.data.library is not None:
+            raise ValueError("runtime.eprobe_share requires NPZ motion files; packed library evaluation is not supported")
+        if cfg.runtime.eprobe_share > 0 and cfg.env.sampling_mode == "start":
+            raise ValueError("runtime.eprobe_share requires return or uniform reset sampling")
         self.env = make_env(
             SuperMimicEnvCfgArgs(
                 npz_files=[str(f) for f in files],
@@ -139,6 +148,7 @@ class Trainer:
                     fail_reset_frac=cfg.env.fail_reset_frac,
                     fail_reset_list=None if cfg.env.fail_reset_list is None else str(cfg.env.fail_reset_list),
                     fail_reset_window_s=cfg.env.fail_reset_window_s,
+                    eprobe_share=cfg.runtime.eprobe_share,
                     **(
                         dict(
                             real_reset_prob=cfg.env.real_reset_prob,
@@ -225,8 +235,7 @@ class Trainer:
     def save(self, name: str = "ckpt_latest.pt") -> None:
         if not self.is_main:
             return
-        torch.save(
-            {
+        payload = {
                 "iteration": self.iteration,
                 "num_updates": self.num_updates,
                 "wm": self.wm.state_dict(),
@@ -241,9 +250,25 @@ class Trainer:
                 "critic_opt": self.policy_trainer.critic_opt.state_dict(),
                 **self.command.sampler_state(),  # bin_return, bin_memory, bin_visits
                 "config": asdict(self.cfg),
-            },
-            self.log_dir / name,
-        )
+            }
+        path = self.log_dir / name
+        if self._checkpoint_executor is None:
+            _write_checkpoint_atomic(payload, path)
+            return
+        self.flush_checkpoints()
+        snapshot = _checkpoint_to_cpu(payload)
+        self._checkpoint_future = self._checkpoint_executor.submit(_write_checkpoint_atomic, snapshot, path)
+
+    def flush_checkpoints(self) -> None:
+        if self._checkpoint_future is not None:
+            self._checkpoint_future.result()
+            self._checkpoint_future = None
+
+    def close_checkpoints(self) -> None:
+        self.flush_checkpoints()
+        if self._checkpoint_executor is not None:
+            self._checkpoint_executor.shutdown(wait=True)
+            self._checkpoint_executor = None
 
     def load(self, path: Path) -> None:
         ck = torch.load(path, map_location=self.device, weights_only=False)
@@ -295,6 +320,36 @@ class Trainer:
             avg.mul_(decay).add_(live, alpha=1.0 - decay)
         for avg, live in zip(self.policy_ema.buffers(), self.policy.buffers()):
             avg.copy_(live)
+
+    @torch.no_grad()
+    def run_eprobe(self) -> list[str]:
+        """Evaluate the EMA policy, then update all ranks' failure-focused sampler."""
+        cfg = self.cfg.runtime
+        if cfg.eprobe_share <= 0 or self.policy_ema is None:
+            return []
+        failures: list[tuple[str, int]] = []
+        if self.is_main:
+            from supermimic.eval.benchmark import run_benchmark
+
+            results = run_benchmark(
+                self.policy_ema,
+                [str(path) for path in self.motion_files],
+                device=self.device,
+                num_envs=cfg.eprobe_num_envs,
+                future_frames=self.cfg.env.future_frames,
+                anchor_obs=self.cfg.env.anchor_obs,
+                lock_waist=self.cfg.env.lock_waist,
+                lock_waist_refs=self.cfg.env.lock_waist_refs,
+                verbose=False,
+            )
+            failures = [(r.name, r.fail_step) for r in results if r.failed and r.fail_step > 0]
+            n = self.command.update_eprobe_failures(failures, cfg.eprobe_window_s, cfg.eprobe_decay)
+            print(f"[INFO] eprobe iteration={self.iteration} failed={n}/{len(results)} share={cfg.eprobe_share}", flush=True)
+        if self.world > 1:
+            import torch.distributed as dist
+
+            dist.broadcast(self.command.eprobe_bin_weights, src=0)
+        return [name for name, _ in failures]
 
     def apply_lr(self, iteration: int) -> float:
         lr_wm, lr_pi = self.lr_at(iteration)
@@ -381,6 +436,10 @@ class Trainer:
                     agg["lr"] = lr
                     agg_n += 1
 
+            if (cfg.runtime.eprobe_share > 0 and self.iteration >= cfg.runtime.eprobe_start
+                    and self.iteration % cfg.runtime.eprobe_every == 0):
+                self.run_eprobe()
+
             # ---------------- logging / checkpoints
             if self.iteration % sch.log_interval == 0:
                 it = self.iteration
@@ -451,6 +510,29 @@ class Trainer:
                         print("[INFO] max_hours reached, stopping")
                     break
         self.save("ckpt_latest.pt")
+        self.close_checkpoints()
         if self.writer is not None:
             self.writer.flush()
         finalize()
+
+
+def _checkpoint_to_cpu(value):
+    if isinstance(value, torch.Tensor):
+        return value.detach().to(device="cpu", copy=True)
+    if isinstance(value, dict):
+        return {key: _checkpoint_to_cpu(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_checkpoint_to_cpu(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_checkpoint_to_cpu(item) for item in value)
+    return value
+
+
+def _write_checkpoint_atomic(payload, path: Path) -> None:
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        torch.save(payload, tmp)
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            tmp.unlink()

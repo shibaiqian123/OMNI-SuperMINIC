@@ -218,6 +218,7 @@ class MultiClipMotionCommand(CommandTerm):
         assert cfg.gmax_mode in ("const", "horizon"), cfg.gmax_mode
         self.bin_return = torch.full((lib.num_bins,), cfg.g_max, device=self.device)
         self.bin_memory = torch.full((lib.num_bins,), 1.0 / lib.num_bins, device=self.device)
+        self.eprobe_bin_weights = torch.zeros(lib.num_bins, device=self.device)
         self.bin_visits = torch.zeros(lib.num_bins, dtype=torch.int32, device=self.device)  # n_b: EMA updates so far
         self.max_ep_steps = max_ep_steps
         self.ep_rewards = torch.zeros(n, self.max_ep_steps, device=self.device)
@@ -462,10 +463,12 @@ class MultiClipMotionCommand(CommandTerm):
         self.bin_return.fill_(self.cfg.g_max)
         self.bin_memory.fill_(1.0 / self.library.num_bins)
         self.bin_visits.zero_()
+        self.eprobe_bin_weights.zero_()
 
     def sampler_state(self) -> dict[str, torch.Tensor]:
         """Checkpoint entries of the sampler statistics."""
-        return {"bin_return": self.bin_return, "bin_memory": self.bin_memory, "bin_visits": self.bin_visits}
+        return {"bin_return": self.bin_return, "bin_memory": self.bin_memory, "bin_visits": self.bin_visits,
+                "eprobe_bin_weights": self.eprobe_bin_weights}
 
     def load_sampler_state(self, ck: dict) -> str:
         """Load sampler statistics from a checkpoint dict (refused if the bins differ). A checkpoint without visit
@@ -480,9 +483,34 @@ class MultiClipMotionCommand(CommandTerm):
         self.bin_memory.copy_(ck["bin_memory"])
         if "bin_visits" in ck:
             self.bin_visits.copy_(ck["bin_visits"])
+            if "eprobe_bin_weights" in ck and ck["eprobe_bin_weights"].shape == self.eprobe_bin_weights.shape:
+                self.eprobe_bin_weights.copy_(ck["eprobe_bin_weights"])
             return "sampler state loaded"
         self.bin_visits.fill_(VISITS_SATURATED)
+        if "eprobe_bin_weights" in ck and ck["eprobe_bin_weights"].shape == self.eprobe_bin_weights.shape:
+            self.eprobe_bin_weights.copy_(ck["eprobe_bin_weights"])
         return "sampler state loaded (no visit counters in checkpoint: n_b saturated, plain EMA as before)"
+
+    @torch.no_grad()
+    def update_eprobe_failures(self, points: list[tuple[str, int]], window_s: float, decay: float) -> int:
+        """Update a decayed focus over bins before evaluation failures. fail_step is clip-local."""
+        self.eprobe_bin_weights.mul_(decay)
+        names = {clip.name: i for i, clip in enumerate(self.library.clips)}
+        window = max(1, int(round(window_s / self._env.step_dt)))
+        added = 0
+        for name, fail_step in points:
+            ci = names.get(name)
+            if ci is None or fail_step <= 0:
+                continue
+            fail_frame = torch.minimum(self.library.clip_start[ci] + fail_step - 1, self.library.clip_last[ci])
+            start = (fail_frame - window).clamp_min(self.library.clip_start[ci])
+            bins = torch.arange(self.library.num_bins, device=self.device)
+            mask = (self.library.bin_clip == ci) & (self.library.bin_end > start) & (self.library.bin_start < fail_frame)
+            ids = bins[mask]
+            if ids.numel():
+                self.eprobe_bin_weights[ids] += 1.0 / ids.numel()
+                added += 1
+        return added
 
     def hard_distribution(self) -> torch.Tensor:
         """The paper's hard-bin distribution softmax_b(-T G_b / G_max), optionally capped per clip."""
@@ -501,6 +529,14 @@ class MultiClipMotionCommand(CommandTerm):
         f = self._sample_frames_mixture(n)
         if cfg.fail_reset_frac > 0 and self.fail_frames is not None:
             f = self._apply_fail_resets(f)
+        if getattr(self.cfg, "eprobe_share", 0.0) > 0 and self.eprobe_bin_weights.sum() > 0:
+            use = torch.rand(n, device=self.device) < self.cfg.eprobe_share
+            weights = self.eprobe_bin_weights / self.eprobe_bin_weights.sum().clamp_min(1e-12)
+            ids = torch.multinomial(weights, n, replacement=True)
+            lo, hi = self.library.bin_start[ids], self.library.bin_end[ids]
+            probe = lo + torch.floor(torch.rand(n, device=self.device) * (hi - lo).float()).long()
+            probe = torch.minimum(probe, self.library.clip_last[self.library.bin_clip[ids]] - 2)
+            f = torch.where(use, probe, f)
         return f
 
     def _apply_fail_resets(self, f: torch.Tensor) -> torch.Tensor:
@@ -744,6 +780,7 @@ class MultiClipMotionCommandCfg(CommandTermCfg):
     fail_reset_frac: float = 0.0
     fail_reset_list: str | None = None
     fail_reset_window_s: float = 3.0
+    eprobe_share: float = 0.0
     # Deviation from the paper, 0 = off: probability that a (non-forced) reset starts from a real-log state of
     # real_reset_file (module docstring); real_reset_vel: root linear velocity "clip" | "foot" | "mix" (50/50).
     real_reset_prob: float = 0.0
