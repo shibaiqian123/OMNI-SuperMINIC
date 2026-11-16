@@ -168,7 +168,9 @@ class Trainer:
         # 29-joint constants (identical to robot.data for the unlocked robot; locked joints filled in otherwise).
         q0_full, soft_full = full_joint_constants(robot)
         reward_cfg = TrackingRewardCfg(
-            w_tilt_hinge=cfg.env.tilt_hinge_weight, tilt_hinge_knee=cfg.env.tilt_hinge_knee, w_joint_torque=cfg.env.joint_torque_weight
+            w_tilt_hinge=cfg.env.tilt_hinge_weight, tilt_hinge_knee=cfg.env.tilt_hinge_knee,
+            w_joint_torque=cfg.env.joint_torque_weight, w_contact=cfg.runtime.w_contact,
+            contact_height=cfg.runtime.contact_height, contact_speed=cfg.runtime.contact_speed,
         )
         if cfg.env.joint_vel_hinge_weight != 0.0:
             from supermimic.data.motion_convert import G1_JOINT_NAMES

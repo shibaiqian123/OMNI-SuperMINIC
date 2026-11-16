@@ -27,6 +27,7 @@ REWARD_TERM_NAMES = (
     "joint_torque",  # identically 0 unless --env.joint-torque-weight != 0
     "joint_vel_hinge",  # identically 0 unless --env.joint-vel-hinge-weight != 0
     "yaw_rate_hinge",  # identically 0 unless --env.yaw-rate-hinge-weight != 0
+    "contact",  # identically 0 unless --runtime.w-contact != 0
 )
 
 

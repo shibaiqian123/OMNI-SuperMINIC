@@ -57,6 +57,10 @@ class TrackingRewardCfg:
     # pelvis body-frame z angular velocity [rad/s], aimed at the yaw spins that saturate the real gyro (500 deg/s).
     w_yaw_rate_hinge: float = 0.0
     yaw_rate_hinge_thr: float = 7.5
+    # Blink-style training-only foot contact agreement / anti-slip reward.
+    w_contact: float = 0.0
+    contact_height: float = 0.045
+    contact_speed: float = 0.5
 
     @property
     def max_step_reward(self) -> float:
@@ -170,6 +174,16 @@ def tracking_reward_terms(
         yaw_rate_hinge = yaw_rate_hinge_value(root_ang_vel_b, cfg.yaw_rate_hinge_thr)
     else:
         yaw_rate_hinge = torch.zeros_like(action_rate)
+    if cfg.w_contact != 0.0 and robot_body_pos_w.shape[-2] >= 7:
+        foot_ids = (3, 6)  # TRACKED_BODIES: left/right ankle roll links
+        ref_contact = (ref_body_pos_w[..., list(foot_ids), 2] < cfg.contact_height)
+        robot_contact = (robot_body_pos_w[..., list(foot_ids), 2] < cfg.contact_height)
+        speed = robot_body_lin_vel_w[..., list(foot_ids), :2].norm(dim=-1)
+        agreement = (ref_contact == robot_contact).float().mean(-1)
+        slip = (robot_contact & (speed > cfg.contact_speed)).float().mean(-1)
+        contact = agreement - slip
+    else:
+        contact = torch.zeros_like(action_rate)
 
     dt = cfg.dt
     terms = {
@@ -186,6 +200,7 @@ def tracking_reward_terms(
         "joint_torque": dt * cfg.w_joint_torque * joint_torque,
         "joint_vel_hinge": dt * cfg.w_joint_vel_hinge * joint_vel_hinge,
         "yaw_rate_hinge": -dt * abs(cfg.w_yaw_rate_hinge) * yaw_rate_hinge,
+        "contact": dt * cfg.w_contact * contact,
     }
     total = terms["motion_global_root_pos"]
     for k, v in terms.items():

@@ -208,6 +208,9 @@ class RuntimeCfg:
     lr_decay_ret: float = 0.0
     lr_decay_len: int = 300
     lr_decay_by: int = 0
+    w_contact: float = 0.0
+    contact_height: float = 0.045
+    contact_speed: float = 0.5
 
 
 @dataclass
