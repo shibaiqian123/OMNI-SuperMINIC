@@ -212,8 +212,8 @@ class Trainer:
             broadcast_params(m)
         self.wm_trainer = WorldModelTrainer(self.wm, self.lib, cfg.wm_trainer)
         self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, self.lib, cfg.policy_trainer)
-        self.wm_update = self.wm_trainer.update
-        self.policy_update = self.policy_trainer.update
+        self.wm_update = lambda: self.wm_trainer.update(self.buffer)
+        self.policy_update = lambda: self.policy_trainer.update(self.buffer)
         if cfg.runtime.cuda_graph:
             if self.world != 1:
                 raise ValueError("runtime.cuda_graph currently requires one process/GPU")
