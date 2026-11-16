@@ -26,6 +26,7 @@ class WMTrainerCfg:
     fused_adam: bool = False
     opt_kind: str = "adam"
     mirror_fraction: float = 0.0
+    capturable: bool = False
 
 
 def reference_at(lib: MotionLibrary, frame: torch.Tensor) -> ReferenceFrame:
@@ -39,13 +40,17 @@ class WorldModelTrainer:
         self.wm = wm
         self.lib = lib
         self.cfg = cfg
-        self.opt = build_optimizer(wm, [wm.dynamics.mlp, wm.term_head.mlp], kind=cfg.opt_kind, lr=cfg.lr, fused=cfg.fused_adam)
+        self.opt = build_optimizer(wm, [wm.dynamics.mlp, wm.term_head.mlp], kind=cfg.opt_kind, lr=cfg.lr,
+                                   fused=cfg.fused_adam, capturable=cfg.capturable)
         self.mirror = None
         wm.enable_compile(cfg.compile)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:
-            g["lr"] = lr
+            if torch.is_tensor(g["lr"]):
+                g["lr"].fill_(lr)
+            else:
+                g["lr"] = lr
 
     def loss_on(self, w: WindowBatch):
         if self.cfg.mirror_fraction > 0.0:

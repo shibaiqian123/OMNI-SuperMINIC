@@ -38,6 +38,7 @@ class PolicyTrainerCfg:
     compile_more: bool = False
     amp: str = "none"
     fused_adam: bool = False
+    capturable: bool = False
     opt_kind: str = "adam"
     anchor_obs: bool = False  # None | "default" | "reduce-overhead" | "max-autotune-no-cudagraphs"
     # Saturating-IMU observation model in imagination (copied from EnvCfg.imu_* by the training loop; 0 = off).
@@ -52,18 +53,24 @@ class PolicyTrainer:
         self.wm, self.policy, self.critic, self.lib, self.cfg = wm, policy, critic, lib, cfg
         self.opt_kind = cfg.opt_kind
         self.opt = build_optimizer(policy, [policy.encoders["motion"].mlp, policy.decoder.mlp], kind=self.opt_kind,
-                                   lr=cfg.lr, betas=cfg.betas, fused=cfg.fused_adam)
-        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=cfg.critic_lr,
-                                           fused=cfg.fused_adam)
+                                   lr=cfg.lr, betas=cfg.betas, fused=cfg.fused_adam, capturable=cfg.capturable)
+        critic_lr = torch.tensor(float(cfg.critic_lr), device=next(critic.parameters()).device) if cfg.capturable else cfg.critic_lr
+        self.critic_opt = torch.optim.Adam(critic.parameters(), lr=critic_lr, fused=cfg.fused_adam, capturable=cfg.capturable)
         from supermimic.imagination.compiled import ImagStep
 
         self.step_fn = ImagStep(wm, lib.default_joint_pos, compile_mode=cfg.compile)
 
     def set_lr(self, lr: float) -> None:
         for g in self.opt.param_groups:
-            g["lr"] = lr
+            if torch.is_tensor(g["lr"]):
+                g["lr"].fill_(lr)
+            else:
+                g["lr"] = lr
         for g in self.critic_opt.param_groups:
-            g["lr"] = lr
+            if torch.is_tensor(g["lr"]):
+                g["lr"].fill_(lr)
+            else:
+                g["lr"] = lr
 
     def _critic_inputs(self, ro: ImagRollout):
         H1, n, _ = ro.states.shape

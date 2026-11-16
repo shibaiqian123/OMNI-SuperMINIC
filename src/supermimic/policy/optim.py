@@ -46,9 +46,14 @@ class MuonAdam:
         self.adam.load_state_dict(state["adam"])
 
 
-def build_optimizer(model: nn.Module, mlps: list[nn.Module], *, kind: str, lr: float, betas=(0.9, 0.95), fused: bool = False):
+def build_optimizer(model: nn.Module, mlps: list[nn.Module], *, kind: str, lr: float, betas=(0.9, 0.95),
+                    fused: bool = False, capturable: bool = False):
     if kind == "adam":
-        return torch.optim.Adam(model.parameters(), lr=lr, betas=betas, fused=fused)
+        params = list(model.parameters())
+        lr_arg = torch.tensor(float(lr), device=params[0].device) if capturable else lr
+        return torch.optim.Adam(params, lr=lr_arg, betas=betas, fused=fused, capturable=capturable)
     if kind == "muon":
+        if capturable:
+            raise ValueError("capturable Muon is not implemented; use Adam with CUDA Graph")
         return MuonAdam(model, mlps, lr=lr, betas=betas, fused=fused)
     raise ValueError(f"unsupported optimizer kind: {kind!r}")

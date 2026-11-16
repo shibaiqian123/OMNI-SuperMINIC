@@ -34,9 +34,9 @@ class CudaGraphUpdate:
             stream = torch.cuda.Stream()
             stream.wait_stream(torch.cuda.current_stream())
             with torch.cuda.stream(stream):
-                self.fn()
+                result = self.fn()
             torch.cuda.current_stream().wait_stream(stream)
-            return self.fn()
+            return result
         torch.cuda.synchronize()
         graph = torch.cuda.CUDAGraph()
         start = time.perf_counter()
