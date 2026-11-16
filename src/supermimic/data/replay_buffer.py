@@ -58,6 +58,7 @@ class ReplayBuffer:
         self.ep_counter = torch.zeros(E, dtype=torch.long, device=self.device)
         self.total_rows = 0
         self._env_ar = torch.arange(E, device=self.device)
+        self.graph_sampling = False
 
     # ------------------------------------------------------------------ writes
 
@@ -114,9 +115,10 @@ class ReplayBuffer:
     @torch.no_grad()
     def _sample_from_mask(self, mask: torch.Tensor, n: int) -> tuple[torch.Tensor, torch.Tensor]:
         flat = mask.reshape(-1)
-        total = int(flat.sum().item())
-        if total == 0:
-            raise RuntimeError("replay buffer has no sampleable rows yet")
+        if not self.graph_sampling:
+            total = int(flat.sum().item())
+            if total == 0:
+                raise RuntimeError("replay buffer has no sampleable rows yet")
         idx = torch.multinomial(flat.float(), n, replacement=True)
         return idx // self.T, idx % self.T
 

@@ -212,6 +212,22 @@ class Trainer:
             broadcast_params(m)
         self.wm_trainer = WorldModelTrainer(self.wm, self.lib, cfg.wm_trainer)
         self.policy_trainer = PolicyTrainer(self.wm, self.policy, self.critic, self.lib, cfg.policy_trainer)
+        self.wm_update = self.wm_trainer.update
+        self.policy_update = self.policy_trainer.update
+        if cfg.runtime.cuda_graph:
+            if self.world != 1:
+                raise ValueError("runtime.cuda_graph currently requires one process/GPU")
+            if cfg.env.anchor_obs or cfg.env.imu_sat_prob > 0:
+                raise ValueError("runtime.cuda_graph currently supports static G1 goals without anchor/IMU state")
+            if cfg.runtime.pi_opt != "adam" or cfg.runtime.wm_opt != "adam":
+                raise ValueError("runtime.cuda_graph currently requires Adam optimizers")
+            if not cfg.runtime.fused_adam:
+                raise ValueError("runtime.cuda_graph requires fused Adam")
+            from supermimic.training.cuda_graph import CudaGraphUpdate
+
+            self.buffer.graph_sampling = True
+            self.wm_update = CudaGraphUpdate(lambda: self.wm_trainer.update(self.buffer), "world-model", cfg.runtime.graph_warmup)
+            self.policy_update = CudaGraphUpdate(lambda: self.policy_trainer.update(self.buffer), "policy-critic", cfg.runtime.graph_warmup)
         n_params = lambda m: sum(p.numel() for p in m.parameters())  # noqa: E731
         if self.is_main:
             print(f"[INFO] params: world model {n_params(self.wm)/1e6:.2f}M, policy {n_params(self.policy)/1e6:.2f}M, critic {n_params(self.critic)/1e6:.3f}M")
@@ -417,13 +433,13 @@ class Trainer:
                     self._utd_acc -= 1.0
                     lr = self.apply_lr(self.iteration)
                     t0 = time.perf_counter()
-                    m_wm = self.wm_trainer.update(self.buffer)
+                    m_wm = self.wm_update()
                     if not cfg.runtime.no_sync:
                         torch.cuda.synchronize()
                     timers["wm"] += time.perf_counter() - t0
                     t0 = time.perf_counter()
                     for _ in range(sch.policy_updates_per_wm_update):
-                        m_pi = self.policy_trainer.update(self.buffer)
+                        m_pi = self.policy_update()
                         self.update_policy_ema()
                     if not cfg.runtime.no_sync:
                         torch.cuda.synchronize()

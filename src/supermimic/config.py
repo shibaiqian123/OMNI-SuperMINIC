@@ -195,6 +195,7 @@ class RuntimeCfg:
     fused_rot: bool = False
     no_sync: bool = False
     cuda_graph: bool = False
+    graph_warmup: int = 3
     graph_early: bool = False
     collect_graph: bool = False
     reset_masked: bool = False
