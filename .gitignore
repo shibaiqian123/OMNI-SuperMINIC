@@ -22,3 +22,5 @@ videos*/
 # macOS metadata
 .DS_Store
 ._*
+
+/runs/
